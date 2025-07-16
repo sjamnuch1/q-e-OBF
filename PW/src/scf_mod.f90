@@ -4,6 +4,8 @@
 ! GNU General Public License. See the file `License'
 ! in the root directory of the present distribution,
 ! or http://www.gnu.org/copyleft/gpl.txt .
+!
+!--------------------------------------------------------------------------
 MODULE scf
   !--------------------------------------------------------------------------
   !! This module contains variables and auxiliary routines needed for
@@ -12,19 +14,19 @@ MODULE scf
   USE kinds,           ONLY : DP
   USE lsda_mod,        ONLY : nspin
   USE ldaU,            ONLY : lda_plus_u, Hubbard_lmax, lda_plus_u_kind, ldmx, &
-                              ldmx_b, is_hubbard_back, orbital_resolved
+                              ldmx_b, is_hubbard_back
   USE ions_base,       ONLY : nat
   USE buffers,         ONLY : open_buffer, close_buffer, get_buffer, save_buffer
   USE xc_lib,          ONLY : xclib_dft_is
   USE fft_base,        ONLY : dfftp
-  USE fft_rho,         ONLY : rho_g2r
+  USE fft_interfaces,  ONLY : invfft
   USE gvect,           ONLY : ngm
   USE gvecs,           ONLY : ngms
   USE ions_base,       ONLY : ntyp => nsp
   USE paw_variables,   ONLY : okpaw
   USE uspp_param,      ONLY : nhm
   USE extfield,        ONLY : dipfield, emaxpos, eopreg, edir
-  USE control_flags,   ONLY : lxdm, sic
+  USE control_flags,   ONLY : lxdm
   !
   SAVE
   !
@@ -60,10 +62,6 @@ MODULE scf
      !! the DFT+U occupation matrix - noncollinear case
      REAL(DP),    ALLOCATABLE :: bec(:,:,:)
      !! the PAW hamiltonian elements
-     REAL(DP),   ALLOCATABLE :: pol_r(:,:) 
-     !! the polaron density in R-space
-     COMPLEX(DP),ALLOCATABLE :: pol_g(:,:) 
-     !! the polaron density in G-space
   END TYPE scf_type
   !
   TYPE mix_type
@@ -82,8 +80,6 @@ MODULE scf
      !! PAW corrections to hamiltonian
      REAL(DP) :: el_dipole
      !! electrons dipole
-     COMPLEX(DP), ALLOCATABLE :: pol_g(:,:)  
-     !! polaron density in G-space
   END TYPE mix_type
   !
   TYPE(scf_type) :: rho
@@ -98,6 +94,9 @@ MODULE scf
   REAL(DP), ALLOCATABLE :: vltot(:)
   !! the local potential in real space
   REAL(DP), ALLOCATABLE :: vrs(:,:)
+#if defined(__CUDA)
+  attributes(pinned) :: vrs
+#endif
   !! the total pot. in real space (smooth grid)
   REAL(DP), ALLOCATABLE :: rho_core(:)
   !! the core charge in real space
@@ -108,9 +107,9 @@ MODULE scf
   !
   INTEGER, PRIVATE  :: record_length, &
                        rlen_rho=0,  rlen_kin=0,  rlen_ldaU=0,  rlen_bec=0,&
-                       rlen_dip=0, rlen_ldaUb=0, rlen_pol=0, &
+                       rlen_dip=0, rlen_ldaUb=0, &
                        start_rho=0, start_kin=0, start_ldaU=0, start_bec=0, &
-                       start_dipole=0, start_ldaUb=0, start_pol=0
+                       start_dipole=0, start_ldaUb=0
   INTEGER :: nt
   ! DFT+U, colinear and noncolinear cases
   LOGICAL, PRIVATE :: lda_plus_u_co  ! collinear case
@@ -169,11 +168,6 @@ CONTAINS
       IF (allocate_becsum) ALLOCATE( rho%bec(nhm*(nhm+1)/2,nat,nspin) )
    ENDIF
    !
-   IF (sic) THEN
-      IF(.NOT. ALLOCATED(rho%pol_r)) ALLOCATE(rho%pol_r(dfftp%nnr,nspin)) 
-      IF(.NOT. ALLOCATED(rho%pol_g)) ALLOCATE(rho%pol_g(ngm,nspin)) 
-   END IF
-   !
    RETURN
    !
  END SUBROUTINE create_scf_type
@@ -197,8 +191,6 @@ CONTAINS
    IF (ALLOCATED(rho%nsb)  )  DEALLOCATE( rho%nsb   )
    IF (ALLOCATED(rho%ns_nc))  DEALLOCATE( rho%ns_nc )
    IF (ALLOCATED(rho%bec)  )  DEALLOCATE( rho%bec   )
-   IF (ALLOCATED(rho%pol_r))  DEALLOCATE( rho%pol_r )
-   IF (ALLOCATED(rho%pol_g))  DEALLOCATE( rho%pol_g )
    !
    RETURN
    !
@@ -214,18 +206,12 @@ CONTAINS
    TYPE(mix_type) :: rho
    !
    ALLOCATE( rho%of_g(ngms,nspin) )
-  !$acc enter data copyin(rho) create(rho%of_g(1:ngms, 1:nspin))
    !
-  !$acc kernels 
    rho%of_g = 0._dp
-  !$acc end kernels
    !
    IF (xclib_dft_is('meta') .OR. lxdm) THEN
       ALLOCATE( rho%kin_g(ngms,nspin) )
-     !$acc enter data create(rho%kin_g(1:ngms, 1:nspin))
-     !$acc kernels
       rho%kin_g = 0._dp
-     !$acc end kernels
    ENDIF
    !
    lda_plus_u_co = lda_plus_u .AND. .NOT. (nspin == 4 ) .AND. .NOT. ( lda_plus_u_kind == 2)
@@ -259,11 +245,6 @@ CONTAINS
    !
    rho%el_dipole = 0._dp
    !
-   IF (sic) THEN
-      ALLOCATE(rho%pol_g(ngms,nspin))
-      rho%pol_g = 0._dp
-   END IF
-   !
    RETURN
    !
  END SUBROUTINE create_mix_type
@@ -278,16 +259,8 @@ CONTAINS
    !
    TYPE(mix_type) :: rho
    !
-   
-   IF (ALLOCATED(rho%of_g) )  THEN
-    !$acc exit data finalize delete(rho%of_g) 
-     DEALLOCATE( rho%of_g  )
-   END IF 
-   IF (ALLOCATED(rho%kin_g))  THEN
-    !$acc exit data finalize delete(rho%kin_g) 
-     DEALLOCATE( rho%kin_g )
-   END IF
-  !$acc exit data finalize delete(rho)  
+   IF (ALLOCATED(rho%of_g) )  DEALLOCATE( rho%of_g  )
+   IF (ALLOCATED(rho%kin_g))  DEALLOCATE( rho%kin_g )
    IF (ALLOCATED(rho%ns)   )  DEALLOCATE( rho%ns    )
    IF (ALLOCATED(rho%nsb)  )  DEALLOCATE( rho%nsb   )
    IF (ALLOCATED(rho%ns_nc))  DEALLOCATE( rho%ns_nc )
@@ -311,20 +284,9 @@ CONTAINS
    !
    REAL(DP) :: e_dipole
    !
-  !$acc enter data present_or_copyin(rho_s, rho_s%of_g) 
-  !$acc kernels present(rho_m, rho_m%of_g, rho_s%of_g) 
-   rho_m%of_g(1:ngms,1:nspin) = rho_s%of_g(1:ngms,1:nspin)
-  !$acc end kernels 
-   IF (sic) rho_m%pol_g(1:ngms,:) = rho_s%pol_g(1:ngms,:)
+   rho_m%of_g(1:ngms,:) = rho_s%of_g(1:ngms,:)
    !
-   IF (xclib_dft_is('meta') .OR. lxdm) THEN
-    !$acc enter data present_or_copyin(rho_s%kin_g)
-    !$acc kernels present(rho_m%kin_g, rho_s%kin_g) 
-     rho_m%kin_g(1:ngms,:) = rho_s%kin_g(1:ngms,:)
-    !$acc end kernels
-    !$acc exit data delete(rho_s%kin_g)
-   END IF 
-  !$acc exit data delete(rho_s, rho_s%of_g)  
+   IF (xclib_dft_is('meta') .OR. lxdm) rho_m%kin_g(1:ngms,:) = rho_s%kin_g(1:ngms,:)
    IF (lda_plus_u_nc)  rho_m%ns_nc  = rho_s%ns_nc
    IF (lda_plus_u_co)  rho_m%ns     = rho_s%ns
    IF (lda_plus_u_cob) rho_m%nsb    = rho_s%nsb
@@ -346,6 +308,9 @@ CONTAINS
    !! It fills a \(\text{scf_type}\) object starting from a 
    !! \(\text{mix_type}\) one.
    !
+   USE wavefunctions,        ONLY : psic
+   USE control_flags,        ONLY : gamma_only
+   !
    IMPLICIT NONE
    !
    TYPE(mix_type), INTENT(IN) :: rho_m
@@ -353,28 +318,29 @@ CONTAINS
    !
    INTEGER :: is
    !   
-  !$acc enter data present_or_copyin(rho_s) present_or_copyin(rho_s%of_g, rho_s%of_r)    
-  !$acc kernels 
    rho_s%of_g(1:ngms,:) = rho_m%of_g(1:ngms,:)
-  !$acc end kernels 
-   CALL rho_g2r( dfftp, rho_s%of_g, rho_s%of_r )
-  !$acc exit data copyout(rho_s%of_r, rho_s%of_g)  
+   ! define rho_s%of_r 
    !
-   IF (sic) THEN
-      rho_s%pol_g(1:ngms,:) = rho_m%pol_g(1:ngms,:)
-      CALL rho_g2r( dfftp, rho_s%pol_g, rho_s%pol_r )
-   END IF
+   DO is = 1, nspin
+      psic(:) = ( 0.D0, 0.D0 )
+      psic(dfftp%nl(:)) = rho_s%of_g(:,is)
+      IF ( gamma_only ) psic(dfftp%nlm(:)) = CONJG( rho_s%of_g(:,is) )
+      CALL invfft( 'Rho', psic, dfftp )
+      rho_s%of_r(:,is) = psic(:)
+   ENDDO
    !
-   IF ( xclib_dft_is('meta') .OR. lxdm ) THEN
-     !$acc enter data present_or_copyin(rho_s%kin_g, rho_s%kin_r)
-     !$acc kernels
+   IF (xclib_dft_is('meta') .OR. lxdm) THEN
       rho_s%kin_g(1:ngms,:) = rho_m%kin_g(:,:)
-     !$acc end kernels
-      CALL rho_g2r( dfftp, rho_s%kin_g, rho_s%kin_r )
-     !$acc exit data copyout(rho_s%kin_r, rho_s%kin_g) 
+      ! define rho_s%kin_r 
+      DO is = 1, nspin
+         psic(:) = ( 0.D0, 0.D0 )
+         psic(dfftp%nl(:)) = rho_s%kin_g(:,is)
+         IF ( gamma_only ) psic(dfftp%nlm(:)) = CONJG( rho_s%kin_g(:,is) )
+         CALL invfft( 'Rho', psic, dfftp )
+         rho_s%kin_r(:,is) = psic(:)
+      ENDDO
    ENDIF
    !
-  !$acc exit data delete(rho_s) 
    IF (lda_plus_u_nc)  rho_s%ns_nc(:,:,:,:) = rho_m%ns_nc(:,:,:,:)
    IF (lda_plus_u_co)  rho_s%ns(:,:,:,:)    = rho_m%ns(:,:,:,:)
    IF (lda_plus_u_cob) rho_s%nsb(:,:,:,:)   = rho_m%nsb(:,:,:,:)
@@ -409,10 +375,6 @@ CONTAINS
   IF (lda_plus_u_co)  Y%ns    = X%ns
   IF (lda_plus_u_cob) Y%nsb   = X%nsb
   IF (okpaw)          Y%bec   = X%bec
-  IF (sic) THEN
-     Y%pol_r = X%pol_r
-     Y%pol_g = X%pol_g
-  END IF
   !
   RETURN
   !
@@ -433,26 +395,15 @@ CONTAINS
   TYPE(mix_type), INTENT(IN)    :: X
   TYPE(mix_type), INTENT(INOUT) :: Y
   !
-  integer :: calls = 0 
-  calls = calls + 1 
- !$acc data  present(X,Y)
- !$acc kernels present(X%of_g, Y%of_g) 
   Y%of_g = Y%of_g  + A * X%of_g
- !$acc end kernels 
   !
-  IF (xclib_dft_is('meta') .OR. lxdm) THEN 
-   !$acc kernels present(X%kin_g, Y%kin_g)
-    Y%kin_g     = Y%kin_g     + A * X%kin_g
-   !$acc end kernels
-  END IF 
+  IF (xclib_dft_is('meta') .OR. lxdm) Y%kin_g     = Y%kin_g     + A * X%kin_g
   IF (lda_plus_u_nc)           Y%ns_nc     = Y%ns_nc     + A * X%ns_nc
   IF (lda_plus_u_co)           Y%ns        = Y%ns        + A * X%ns
   IF (lda_plus_u_cob)          Y%nsb       = Y%nsb       + A * X%nsb
   IF (okpaw)                   Y%bec       = Y%bec       + A * X%bec
   IF (dipfield)                Y%el_dipole = Y%el_dipole + A * X%el_dipole
-  IF (sic)                     Y%pol_g     = Y%pol_g     + A * X%pol_g
   !
- !$acc end data
   RETURN
   !
  END SUBROUTINE mix_type_AXPY
@@ -470,24 +421,15 @@ CONTAINS
   TYPE(mix_type), INTENT(IN)    :: X
   TYPE(mix_type), INTENT(INOUT) :: Y
   !
- !$acc data present_or_copyin(Y,X)
- !$acc kernels  present_or_copyin(X%of_g, Y%of_g) 
   Y%of_g  = X%of_g
- !$acc end kernels
   !
-  IF (xclib_dft_is('meta') .OR. lxdm) THEN
-   !$acc kernels present_or_copyin(X%kin_g, Y%kin_g) 
-    Y%kin_g     = X%kin_g
-   !$acc end kernels
-  END IF
+  IF (xclib_dft_is('meta') .OR. lxdm) Y%kin_g     = X%kin_g
   IF (lda_plus_u_nc)           Y%ns_nc     = X%ns_nc
   IF (lda_plus_u_co)           Y%ns        = X%ns
   IF (lda_plus_u_cob)          Y%nsb       = X%nsb
   IF (okpaw)                   Y%bec       = X%bec
   IF (dipfield)                Y%el_dipole = X%el_dipole
-  IF (sic)                     Y%pol_g     = X%pol_g
   !
- !$acc end data
   RETURN
   !
  END SUBROUTINE mix_type_COPY
@@ -500,30 +442,21 @@ CONTAINS
   !! NB: A is a REAL(DP) number
   !
   USE kinds, ONLY : DP
+  !
   IMPLICIT NONE
   !
   REAL(DP),       INTENT(IN)    :: A
   TYPE(mix_type), INTENT(INOUT) :: X
   !
-  !
- !$acc data present_or_copyin(X)
- !$acc kernels present_or_copyin(X%of_g) 
   X%of_g(:,:) = A * X%of_g(:,:)
- !$acc end kernels
   !
-  IF (xclib_dft_is('meta') .OR. lxdm) THEN
-   !$acc kernels present_or_copyin(X%kin_g)
-    X%kin_g     = A * X%kin_g
-   !$acc end kernels
-  END IF 
+  IF (xclib_dft_is('meta') .OR. lxdm) X%kin_g     = A * X%kin_g
   IF (lda_plus_u_nc)           X%ns_nc     = A * X%ns_nc
   IF (lda_plus_u_co)           X%ns        = A * X%ns
   IF (lda_plus_u_cob)          X%nsb       = A * X%nsb
   IF (okpaw)                   X%bec       = A * X%bec
   IF (dipfield)                X%el_dipole = A * X%el_dipole
-  IF (sic)                     X%pol_g     = A * X%pol_g
   !
- !$acc end data
   RETURN
   !
  END SUBROUTINE mix_type_SCAL
@@ -532,6 +465,9 @@ CONTAINS
  !---------------------------------------------------------------------
  SUBROUTINE high_frequency_mixing( rhoin, input_rhout, alphamix )
    !-------------------------------------------------------------------
+   !
+   USE wavefunctions,    ONLY : psic
+   USE control_flags,    ONLY : gamma_only
    !
    IMPLICIT NONE
    !
@@ -542,27 +478,32 @@ CONTAINS
    ! ... local variable
    !
    INTEGER :: is
-
-   call start_clock('high_freq_mix') 
    !
-   !$acc data present_or_copyin(rhoin, rhoin%of_g, rhoin%of_r) 
    IF (ngms < ngm ) THEN
       !
       rhoin%of_g = rhoin%of_g + alphamix * (input_rhout%of_g-rhoin%of_g)
       rhoin%of_g(1:ngms,1:nspin) = (0.d0,0.d0)
-      CALL rho_g2r( dfftp, rhoin%of_g, rhoin%of_r )
+      ! define rho_s%of_r 
+      DO is = 1, nspin
+         psic(:) = ( 0.D0, 0.D0 )
+         psic(dfftp%nl(:)) = rhoin%of_g(:,is)
+         IF ( gamma_only ) psic(dfftp%nlm(:)) = CONJG( rhoin%of_g(:,is) )
+         CALL invfft( 'Rho', psic, dfftp )
+         rhoin%of_r(:,is) = psic(:)
+      ENDDO
       !
       IF (xclib_dft_is('meta') .OR. lxdm) THEN
          rhoin%kin_g = rhoin%kin_g + alphamix * ( input_rhout%kin_g-rhoin%kin_g)
          rhoin%kin_g(1:ngms,1:nspin) = (0.d0,0.d0)
-         CALL rho_g2r( dfftp, rhoin%kin_g, rhoin%kin_r )
+         ! define rho_s%of_r 
+         DO is = 1, nspin
+            psic(:) = ( 0.D0, 0.D0 )
+            psic(dfftp%nl(:)) = rhoin%kin_g(:,is)
+            IF ( gamma_only ) psic(dfftp%nlm(:)) = CONJG( rhoin%kin_g(:,is) )
+            CALL invfft( 'Rho', psic, dfftp )
+            rhoin%kin_r(:,is) = psic(:)
+         ENDDO
       ENDIF
-      !
-      IF(sic) THEN
-         rhoin%pol_g = rhoin%pol_g + alphamix * (input_rhout%pol_g-rhoin%pol_g)
-         rhoin%pol_g(1:ngms,1:nspin) = (0.d0,0.d0)
-         CALL rho_g2r( dfftp, rhoin%pol_g, rhoin%pol_r )
-      END IF
       !
    ELSE
       !
@@ -572,10 +513,6 @@ CONTAINS
          rhoin%kin_g(:,:)= (0.d0,0.d0)
          rhoin%kin_r(:,:)= 0.d0
       ENDIF
-      IF(sic) then
-         rhoin%pol_g(:,:)= (0.d0,0.d0)
-         rhoin%pol_r(:,:)= 0.d0
-      END IF
       !
    ENDIF
    !
@@ -583,8 +520,6 @@ CONTAINS
    IF (lda_plus_u_co)  rhoin%ns(:,:,:,:)    = 0.d0
    IF (lda_plus_u_cob) rhoin%nsb(:,:,:,:)   = 0.d0
    !
-   !$acc end data 
-   call stop_clock('high_freq_mix') 
    RETURN
    !
  END SUBROUTINE high_frequency_mixing 
@@ -610,7 +545,6 @@ CONTAINS
    IF (lda_plus_u_nc)           rlen_ldaU = 2 * (2*Hubbard_lmax+1)**2 *nspin*nat
    IF (okpaw)                   rlen_bec  = (nhm*(nhm+1)/2) * nat * nspin
    IF (dipfield)                rlen_dip  = 1
-   IF (sic)                     rlen_pol  = 2*ngms*nspin
    !
    ! define the starting point of the different chunks. Beware: each starting point
    ! is the index of a COMPLEX array. When real arrays with odd dimension are copied
@@ -626,10 +560,9 @@ CONTAINS
       start_bec = start_ldaU + ( rlen_ldaU + 1 ) / 2
    ENDIF
    start_dipole = start_bec  + ( rlen_bec + 1 ) / 2
-   start_pol    = start_dipole + ( rlen_dip + 1 ) / 2
    !
    ! define total record length, in complex numbers
-   record_length = start_pol + rlen_pol - 1
+   record_length = start_dipole + rlen_dip - 1
    !
    ! open file and allocate io_buffer
    CALL open_buffer( iunit, extension, record_length, io_level, exst )
@@ -673,20 +606,15 @@ CONTAINS
    !
    IF (iflag > 0) THEN
       !
-     !$acc update self(rho%of_g) 
       CALL DCOPY(rlen_rho,rho%of_g,1,io_buffer(start_rho),1)
       !
-      IF (xclib_dft_is('meta') .OR. lxdm) THEN
-       !$acc update self(rho%kin_g) 
-        CALL DCOPY(rlen_kin, rho%kin_g,1,io_buffer(start_kin), 1)
-      END IF 
+      IF (xclib_dft_is('meta') .OR. lxdm) CALL DCOPY(rlen_kin, rho%kin_g,1,io_buffer(start_kin), 1)
       IF (lda_plus_u_nc)           CALL DCOPY(rlen_ldaU,rho%ns_nc,1,io_buffer(start_ldaU),1)
       IF (lda_plus_u_co)           CALL DCOPY(rlen_ldaU,rho%ns,   1,io_buffer(start_ldaU),1)
       IF (lda_plus_u_cob)          CALL DCOPY(rlen_ldaUb,rho%nsb, 1,io_buffer(start_ldaUb),1)
       IF (okpaw)                   CALL DCOPY(rlen_bec, rho%bec,  1,io_buffer(start_bec), 1)
       !
-      IF (dipfield) io_buffer(start_dipole) = CMPLX( rho%el_dipole, 0.0_dp, KIND=DP )
-      IF (sic)                     CALL DCOPY(rlen_pol, rho%pol_g, 1,io_buffer(start_pol),1)
+      IF (dipfield) io_buffer(start_dipole) = CMPLX( rho%el_dipole, 0.0_dp )
       !
       CALL save_buffer( io_buffer, record_length, iunit, record )   
       !
@@ -695,19 +623,14 @@ CONTAINS
       CALL get_buffer( io_buffer, record_length, iunit, record )
       !
       CALL DCOPY(rlen_rho,io_buffer(start_rho),1,rho%of_g,1)
-     !$acc update device(rho%of_g)
       !
-      IF (xclib_dft_is('meta') .OR. lxdm) THEN 
-        CALL DCOPY(rlen_kin, io_buffer(start_kin), 1,rho%kin_g,1)
-       !$acc update device(rho%kin_g) 
-      END IF
+      IF (xclib_dft_is('meta') .OR. lxdm) CALL DCOPY(rlen_kin, io_buffer(start_kin), 1,rho%kin_g,1)
       IF (lda_plus_u_co)           CALL DCOPY(rlen_ldaU,io_buffer(start_ldaU),1,rho%ns,   1)
       IF (lda_plus_u_cob)          CALL DCOPY(rlen_ldaUb,io_buffer(start_ldaUb),1,rho%nsb,1)
       IF (lda_plus_u_nc)           CALL DCOPY(rlen_ldaU,io_buffer(start_ldaU),1,rho%ns_nc,1)
       IF (okpaw)                   CALL DCOPY(rlen_bec, io_buffer(start_bec), 1,rho%bec,  1)
       !
       IF (dipfield) rho%el_dipole = DBLE( io_buffer(start_dipole) )
-      IF (sic)                     CALL DCOPY(rlen_pol, io_buffer(start_pol), 1,rho%pol_g,1)
       !
    ENDIF
    !
@@ -725,7 +648,6 @@ FUNCTION rho_ddot( rho1, rho2, gf, g0 )
   USE cell_base,       ONLY : omega, tpiba2
   USE gvect,           ONLY : gg, gstart
   USE control_flags,   ONLY : gamma_only
-  USE noncollin_module,ONLY : noncolin
   USE paw_onecenter,   ONLY : paw_ddot
   USE mp_bands,        ONLY : intra_bgrp_comm
   USE mp,              ONLY : mp_sum
@@ -743,7 +665,6 @@ FUNCTION rho_ddot( rho1, rho2, gf, g0 )
   REAL(DP) :: rho_ddot
   !! output: see function comments
   !
- !$acc declare present(rho1, rho2)
   ! ... local variables
   !
   REAL(DP) :: fac
@@ -767,20 +688,17 @@ FUNCTION rho_ddot( rho1, rho2, gf, g0 )
   !
   IF ( gg0 > 0.0_DP ) THEN
      !
-    !$acc parallel loop reduction(+:rho_ddot)
      DO ig = gstart, gf
         !
         rho_ddot = rho_ddot + &
                    REAL( CONJG( rho1%of_g(ig,1) )*rho2%of_g(ig,1), DP ) / ( gg(ig) + gg0 )
         !
      END DO
-    !$acc end parallel loop 
      !
      IF ( gamma_only ) rho_ddot = 2.D0 * rho_ddot
      !
      IF ( gstart == 2 ) THEN
         !
-       !$acc update host(rho1%of_g(1,1), rho2%of_g(1,1))
         rho_ddot = rho_ddot + &
                    REAL( CONJG( rho1%of_g(1,1) )*rho2%of_g(1,1), DP ) / ( gg(1) + gg0 )
         !
@@ -788,14 +706,12 @@ FUNCTION rho_ddot( rho1, rho2, gf, g0 )
      !
   ELSE
      !
-    !$acc parallel loop reduction(+:rho_ddot)
      DO ig = gstart, gf
         !
         rho_ddot = rho_ddot + &
                    REAL( CONJG( rho1%of_g(ig,1) )*rho2%of_g(ig,1), DP ) / gg(ig)
         !
      END DO
-    !$acc end parallel loop
      !
      IF ( gamma_only ) rho_ddot = 2.D0 * rho_ddot
      !
@@ -806,19 +722,16 @@ FUNCTION rho_ddot( rho1, rho2, gf, g0 )
   IF ( nspin >= 2 )  THEN
      fac = e2*fpi / tpi**2  ! lambda=1 a.u.
      IF ( gstart == 2 ) THEN
-        !$acc update host(rho1%of_g(1,2:nspin), rho2%of_g(1,2:nspin))
         rho_ddot = rho_ddot + &
                 fac * SUM(REAL(CONJG( rho1%of_g(1,2:nspin))*(rho2%of_g(1,2:nspin) ), DP))
      ENDIF
      !
      IF ( gamma_only ) fac = 2.D0 * fac
      !
-    !$acc parallel loop reduction(+:rho_ddot)
      DO ig = gstart, gf
         rho_ddot = rho_ddot + &
               fac * SUM(REAL(CONJG( rho1%of_g(ig,2:nspin))*(rho2%of_g(ig,2:nspin) ), DP))
      ENDDO
-    !$acc end parallel do
   ENDIF
   !
   rho_ddot = rho_ddot * omega * 0.5D0
@@ -826,18 +739,7 @@ FUNCTION rho_ddot( rho1, rho2, gf, g0 )
   CALL mp_sum( rho_ddot, intra_bgrp_comm )
   !
   IF (xclib_dft_is('meta')) rho_ddot = rho_ddot + tauk_ddot( rho1, rho2, gf )
-  !
-  IF (lda_plus_u ) THEN 
-      IF ( orbital_resolved ) THEN
-         IF ( noncolin ) THEN
-            rho_ddot = rho_ddot + ns_ddot_um_nc( rho1, rho2 )
-         ELSE
-            rho_ddot = rho_ddot + ns_ddot_um( rho1, rho2 )
-         ENDIF
-      ELSE
-         rho_ddot = rho_ddot + ns_ddot( rho1, rho2 )
-      ENDIF
-  ENDIF
+  IF (lda_plus_u )   rho_ddot = rho_ddot + ns_ddot( rho1, rho2 )
   ! 
   ! Beware: paw_ddot has a hidden parallelization on all processors
   !         it must be called on all processors or else it will hang
@@ -870,10 +772,8 @@ FUNCTION tauk_ddot( rho1, rho2, gf )
   !
   TYPE(mix_type), INTENT(IN) :: rho1
   !! first kinetic density
- !$acc declare present(rho1)
   TYPE(mix_type), INTENT(IN) :: rho2
   !! second kinetic density
- !$acc declare present(rho2)
   INTEGER, INTENT(IN) :: gf
   !! point delimiter
   REAL(DP) :: tauk_ddot
@@ -889,7 +789,6 @@ FUNCTION tauk_ddot( rho1, rho2, gf )
   !  write (*,*) rho1%kin_g(1:4,1)
   !  if (.true. ) stop
   !
- !$acc parallel loop reduction(+:tauk_ddot)
   DO ig = gstart, gf
      tauk_ddot = tauk_ddot + DBLE( CONJG( rho1%kin_g(ig,1) )*rho2%kin_g(ig,1) ) 
   ENDDO
@@ -899,24 +798,21 @@ FUNCTION tauk_ddot( rho1, rho2, gf )
   ! ... G=0 term
   !
   IF ( gstart == 2 ) THEN
-    !$acc update host(rho1%kin_g(1,1:nspin), rho2%kin_g(1,1:nspin))
      tauk_ddot = tauk_ddot + DBLE( CONJG( rho1%kin_g(1,1) ) * rho2%kin_g(1,1) )
   ENDIF
   !
   IF ( nspin >= 2 ) THEN
-    !$acc parallel loop reduction (+: tauk_ddot)
      DO ig = gstart, gf
         tauk_ddot = tauk_ddot + &
-          SUM( REAL( CONJG( rho1%kin_g(ig,2:nspin))*(rho2%kin_g(ig,2:nspin) ), DP))
+          SUM( REAL( CONJG( rho1%kin_g(1,2:nspin))*(rho2%kin_g(1,2:nspin) ), DP))
      ENDDO
-    !$acc end parallel loop
      !
      IF ( gamma_only ) tauk_ddot = 2.D0 * tauk_ddot
      !
      ! ... G=0 term
      IF ( gstart == 2 ) THEN
         tauk_ddot = tauk_ddot + &
-          SUM(REAL(CONJG( rho1%kin_g(1,2:nspin))*(rho2%kin_g(1,2:nspin) ), DP))
+          SUM(REAL(CONJG( rho1%kin_g(1,1:nspin))*(rho2%kin_g(1,1:nspin) ), DP))
      ENDIF
      !
      IF ( nspin == 2 ) tauk_ddot = 0.5D0 *  tauk_ddot 
@@ -940,7 +836,7 @@ FUNCTION ns_ddot( rho1, rho2 )
   !! of the self-consistency error on the DFT+U correction to the energy.
   !
   USE kinds,     ONLY : DP
-  USE ldaU,      ONLY : Hubbard_l, Hubbard_U, Hubbard_U2, ldim_back, &
+  USE ldaU,      ONLY : Hubbard_l, Hubbard_U, Hubbard_U_back, ldim_back, &
                         lda_plus_u_kind, is_hubbard, is_hubbard_back
   USE ions_base, ONLY : nat, ityp
   !
@@ -985,7 +881,7 @@ FUNCTION ns_ddot( rho1, rho2 )
         m1 = ldim_back(nt)
         m2 = ldim_back(nt)
         !
-        ns_ddot = ns_ddot + 0.5D0 * Hubbard_U2(nt) * &
+        ns_ddot = ns_ddot + 0.5D0 * Hubbard_U_back(nt) * &
                 SUM( rho1%nsb(:m1,:m2,:nspin,na)*rho2%nsb(:m1,:m2,:nspin,na) )
         !
      ENDIF
@@ -1053,204 +949,7 @@ FUNCTION nsg_ddot( nsg1, nsg2, nspin )
   !
 END FUNCTION nsg_ddot
 !
-!
 !----------------------------------------------------------------------------
-FUNCTION ns_ddot_um( rho1, rho2 )
-  !---------------------------------------------------------------------------
-  !! Calculates \(U/2 \sum_i \text{ns1}(i)\ \text{ns2}(i)\) used as an estimate
-  !! of the self-consistency error on the orbital-resolved DFT+U correction to the energy.
-  !
-  USE kinds,     ONLY : DP
-  USE ldaU,      ONLY : Hubbard_l, Hubbard_U, Hubbard_U2, ldim_back, &
-                        lda_plus_u_kind, is_hubbard, eigenvecs_ref, &
-                        Hubbard_lmax, Hubbard_Um, apply_U
-  USE ions_base, ONLY : nat, ityp
-  USE constants, ONLY : eps16, RYTOEV
-  USE io_global, ONLY : stdout
-  !
-  IMPLICIT NONE  
-  !
-  TYPE(mix_type), INTENT(IN) :: rho1
-  !! first Hubbard ns
-  TYPE(mix_type), INTENT(IN) :: rho2
-  !! second Hubbard ns
-  REAL(DP) :: ns_ddot_um
-  !! output: see function comments
-  !
-  ! ... local variables
-  !
-  COMPLEX(DP)  :: vet1(2*Hubbard_lmax+1,2*Hubbard_lmax+1,nspin)
-  COMPLEX(DP)  :: vet2(2*Hubbard_lmax+1,2*Hubbard_lmax+1,nspin)
-  INTEGER      :: order1(2*Hubbard_lmax+1), order2(2*Hubbard_lmax+1)
-  INTEGER      :: na, ldim, is, m, index1, index2
-  REAL(DP)     :: lambda1(2*Hubbard_lmax+1,nspin), lambda2(2*Hubbard_lmax+1,nspin)
-  !
-  ns_ddot_um = 0.D0
-  !
-  IF (.NOT. apply_U) RETURN
-  ! if apply_um is still .FALSE.
-  ! do not (yet) apply Hubbard U corrections.
-  !
-  DO na = 1, nat
-    nt = ityp(na)
-    IF ( is_hubbard(nt) ) THEN
-      !
-      ldim = 2 * Hubbard_l(nt) + 1
-      !
-      vet1(:,:,:) = CMPLX(0.D0,0.D0, kind=dp)
-      vet2(:,:,:) = CMPLX(0.D0,0.D0, kind=dp)
-      lambda1(:,:) = 0.D0
-      lambda2(:,:) = 0.D0
-      !
-      ! diagonalize old- and new occupation matrix
-      CALL diag_ns( ldim, rho1%ns(1:ldim,1:ldim,:,na), lambda1(1:ldim,:), vet1(1:ldim,1:ldim,:) )
-      CALL diag_ns( ldim, rho2%ns(1:ldim,1:ldim,:,na), lambda2(1:ldim,:), vet2(1:ldim,1:ldim,:) )
-      ! 
-      DO is = 1, nspin
-         ! order eigenvectors
-         order1(:) = 0
-         order2(:) = 0
-         CALL order_eigenvecs( order1(1:ldim), vet1(1:ldim,1:ldim,is), &
-                                 eigenvecs_ref(1:ldim,1:ldim,is,na), ldim )
-         CALL order_eigenvecs( order2(1:ldim), vet2(1:ldim,1:ldim,is), &
-                                 eigenvecs_ref(1:ldim,1:ldim,is,na), ldim )
-         !
-         IF ( ANY(ABS(Hubbard_Um(:,is,nt)) .GT. eps16) ) THEN
-            ! compute U(m)/2*SUM(ns1*ns2)
-            DO m = 1, ldim
-               !
-               ! find the index where the order vector is
-               ! equal to m to apply the same Hubbard_Um
-               ! to the same eigenstates 
-               index1 = FINDLOC(order1,m,dim=1)
-               index2 = FINDLOC(order2,m,dim=1)
-               !
-               ns_ddot_um = ns_ddot_um + 0.5D0 * Hubbard_Um(m,is,nt) * &
-                      lambda1(index1,is) * lambda2(index2,is)
-               !
-               ! This can be removed once the merge request is approved
-#if defined(__DEBUG)
-               WRITE(stdout,'(5X,"m: ", i1,", is: ", i1, ", index1:", i1, " ,&
-                      & index2:", i1)') m, is,index1,index2
-               WRITE(stdout,'(5X,"U: ", f5.3,", lambda1: ", f7.4,", lambda2: ", &
-                      & f7.4,", ns_ddot_um: ", f7.4)') &
-                      Hubbard_Um(m,is,nt)*RYTOEV,lambda1(index1,is),lambda2(index2,is),ns_ddot_um
-#endif
-            !
-            ENDDO
-            !
-         ENDIF
-         !
-      ENDDO
-      !
-     ENDIF
-     !
-  ENDDO
-  !
-  IF ( nspin == 1 ) ns_ddot_um = 2.D0*ns_ddot_um
-  !
-  RETURN
-  !
-END FUNCTION ns_ddot_um
-!
-!----------------------------------------------------------------------------
-!----------------------------------------------------------------------------
-FUNCTION ns_ddot_um_nc( rho1, rho2 )
-   !---------------------------------------------------------------------------
-   !! Calculates \(U/2 \sum_i \text{ns1}(i)\ \text{ns2}(i)\) used as an estimate
-   !! of the self-consistency error on the orbital-resolved DFT+U correction to the energy.
-   !
-   USE kinds,     ONLY : DP
-   USE ldaU,      ONLY : Hubbard_l, ldim_back, &
-                         lda_plus_u_kind, is_hubbard, eigenvecs_ref, &
-                         Hubbard_lmax, Hubbard_Um_nc, apply_U
-   USE ions_base, ONLY : nat, ityp
-   USE constants, ONLY : eps16, RYTOEV
-   USE io_global, ONLY : stdout
-   !
-   IMPLICIT NONE  
-   !
-   TYPE(mix_type), INTENT(IN) :: rho1
-   !! first Hubbard ns
-   TYPE(mix_type), INTENT(IN) :: rho2
-   !! second Hubbard ns
-   REAL(DP) :: ns_ddot_um_nc
-   !! output: see function comments
-   !
-   ! ... local variables
-   !
-   ! For NC case we allocate arrays as 2*(2l+1)
-   COMPLEX(DP)  :: vet1(4*Hubbard_lmax+2,4*Hubbard_lmax+2)
-   COMPLEX(DP)  :: vet2(4*Hubbard_lmax+2,4*Hubbard_lmax+2)
-   REAL(DP)     :: lambda1(4*Hubbard_lmax+2), lambda2(4*Hubbard_lmax+2)
-   INTEGER      :: order1(4*Hubbard_lmax+2), order2(4*Hubbard_lmax+2)
-   INTEGER      :: na, ldim, is, m, index1, index2
-
-   !
-   ns_ddot_um_nc = 0.D0
-   !
-   IF (.NOT. apply_U) RETURN
-   ! if apply_um is still .FALSE.
-   ! do not (yet) apply Hubbard U corrections.
-   !
-   DO na = 1, nat
-     nt = ityp(na)
-     IF ( is_hubbard(nt) ) THEN
-       !
-       ldim = 2 * Hubbard_l(nt) + 1
-       !
-       vet1(:,:) = CMPLX(0.D0,0.D0, kind=dp)
-       vet2(:,:) = CMPLX(0.D0,0.D0, kind=dp)
-       lambda1(:) = 0.D0
-       lambda2(:) = 0.D0
-       !
-       ! diagonalize old- and new occupation matrix
-       CALL diag_ns_nc( ldim, rho1%ns(1:ldim,1:ldim,:,na), lambda1(1:2*ldim), vet1(1:2*ldim,1:2*ldim) )
-       CALL diag_ns_nc( ldim, rho2%ns(1:ldim,1:ldim,:,na), lambda2(1:2*ldim), vet2(1:2*ldim,1:2*ldim) )
-       ! 
-       ! order eigenvectors
-       order1(:) = 0
-       order2(:) = 0
-       CALL order_eigenvecs( order1(1:2*ldim), vet1(1:2*ldim,1:2*ldim), &
-                               eigenvecs_ref(1:2*ldim,1:2*ldim,1,na), 2*ldim )
-       CALL order_eigenvecs( order2(1:2*ldim), vet2(1:2*ldim,1:2*ldim), &
-                               eigenvecs_ref(1:2*ldim,1:2*ldim,1,na), 2*ldim )
-       !
-       IF ( ANY(ABS(Hubbard_Um_nc(:,nt)) .GT. eps16) ) THEN
-          ! compute U(m)/2*SUM(ns1*ns2)
-          DO m = 1, 2*ldim
-             !
-             ! find the index where the order vector is
-             ! equal to m to apply the same Hubbard_Um
-             ! to the same eigenstates 
-             index1 = FINDLOC(order1,m,dim=1)
-             index2 = FINDLOC(order2,m,dim=1)
-             !
-             ns_ddot_um_nc = ns_ddot_um_nc + 0.5D0 * Hubbard_Um_nc(m,nt) * &
-                           lambda1(index1) * lambda2(index2)
-             !
-             ! This can be removed once the merge request is approved
-#if defined(__DEBUG)
-             WRITE(stdout,'(5X,"m: ", i1,", is: ", i1, ", index1:", i1, " , &
-                   & index2:", i1)') m, is,index1,index2
-             WRITE(stdout,'(5X,"U: ", f5.3,", lambda1: ", f7.4,", lambda2: ",&
-                   & f7.4,", ns_ddot_um_nc: ", f7.4)') &
-                   Hubbard_Um_nc(m,nt)*RYTOEV,lambda1(index1),lambda2(index2),ns_ddot_um_nc
-#endif
-          !
-          ENDDO
-       !
-       ENDIF
-      !
-      ENDIF
-      !
-   ENDDO
-   !
-RETURN
-   !
- END FUNCTION ns_ddot_um_nc
- !
- !----------------------------------------------------------------------------
 FUNCTION local_tf_ddot( rho1, rho2, ngm0, g0 )
   !----------------------------------------------------------------------------
   !! Calculates \(4\pi/G^2\ \rho_1(-G)\ \rho_2(G) = V1_\text{Hartree}(-G)\ \rho_2(G)\)
@@ -1283,7 +982,8 @@ FUNCTION local_tf_ddot( rho1, rho2, ngm0, g0 )
   REAL(DP) :: fac
   REAL(DP) :: gg0
   INTEGER  :: ig
-  ! 
+  !
+  local_tf_ddot = 0.D0
   !
   fac = e2 * fpi / tpiba2
   !
@@ -1293,31 +993,38 @@ FUNCTION local_tf_ddot( rho1, rho2, ngm0, g0 )
      !
   ELSE
      !
-     gg0 = 0.0_DP
+     gg0 = -1.0_DP
      !
   END IF
   !
-  local_tf_ddot = 0.D0
-  !$acc data present_or_copyin(rho1, rho2)
-#if defined(_OPENACC)
-  !$acc parallel loop reduction(+:local_tf_ddot) 
-#else
-  !$omp parallel do reduction(+:local_tf_ddot)
-#endif
-  DO ig = gstart, ngm0
-     local_tf_ddot = local_tf_ddot + DBLE( CONJG(rho1(ig))*rho2(ig) ) / ( gg(ig) + gg0 )
-  END DO
-#if !defined(_OPENACC) 
-  !$omp end parallel do
-#endif
-  !$acc end data
-  !
-  IF ( gamma_only ) local_tf_ddot = 2.D0 * local_tf_ddot
-  IF ( gstart == 2 .AND. gg0 > 0.0_dp ) THEN
-     ! This is the G=0 term, that for gamma_only must not be counted twice
-     local_tf_ddot = local_tf_ddot + DBLE( CONJG(rho1(1))*rho2(1) ) / ( gg(1) + gg0 )
+  IF ( gg0 > 0.0_DP ) THEN
+     !
+     !$omp parallel do reduction(+:local_tf_ddot)
+     DO ig = gstart, ngm0
+        local_tf_ddot = local_tf_ddot + REAL( CONJG(rho1(ig))*rho2(ig) ) / ( gg(ig) + gg0 )
+     END DO
+     !$omp end parallel do
+     !
+     IF ( gamma_only ) local_tf_ddot = 2.D0 * local_tf_ddot
+     !
+     IF ( gstart == 2 ) THEN
+        local_tf_ddot = local_tf_ddot + REAL( CONJG(rho1(1))*rho2(1) ) / ( gg(1) + gg0 )
+     END IF
+     !
+  ELSE
+     !
+     !$omp parallel do reduction(+:local_tf_ddot)
+     DO ig = gstart, ngm0
+        local_tf_ddot = local_tf_ddot + REAL( CONJG(rho1(ig))*rho2(ig) ) / gg(ig)
+     END DO
+     !$omp end parallel do
+     !
+     IF ( gamma_only ) local_tf_ddot = 2.D0 * local_tf_ddot
+     !
   END IF
+  !
   local_tf_ddot = fac * local_tf_ddot * omega * 0.5D0
+  !
   CALL mp_sum( local_tf_ddot, intra_bgrp_comm )
   !
   RETURN
@@ -1348,10 +1055,6 @@ SUBROUTINE bcast_scf_type( rho, root, comm )
   IF (lda_plus_u_cob) CALL mp_bcast( rho%nsb,   root, comm )
   IF (lda_plus_u_nc)  CALL mp_bcast( rho%ns_nc, root, comm )
   IF (okpaw)          CALL mp_bcast( rho%bec,   root, comm )
-  IF (sic) THEN
-     CALL mp_bcast ( rho%pol_r, root, comm )
-     CALL mp_bcast ( rho%pol_g, root, comm )
-  END IF
   !
 END SUBROUTINE
 !
@@ -1375,12 +1078,10 @@ SUBROUTINE rhoz_or_updw( rho, sp, dir )
   !
   ! ... local variables
   !
-  INTEGER :: ir, dfftp_nnr
+  INTEGER :: ir
   REAL(DP) :: vi
   !
   IF ( nspin /= 2 ) RETURN
-  !
- !$acc data present_or_copy(rho)
   !
   vi = 0._dp
   IF (dir == '->updw')  vi = 0.5_dp
@@ -1389,9 +1090,7 @@ SUBROUTINE rhoz_or_updw( rho, sp, dir )
   !
   IF ( sp /= 'only_g' ) THEN
      !
-     dfftp_nnr = dfftp%nnr
-    !$acc parallel loop present_or_copy(rho%of_r)
-     DO ir = 1, dfftp_nnr
+     DO ir = 1, dfftp%nnr  
         rho%of_r(ir,1) = ( rho%of_r(ir,1) + rho%of_r(ir,nspin) ) * vi
         rho%of_r(ir,nspin) = rho%of_r(ir,1) - rho%of_r(ir,nspin) * vi * 2._dp
      ENDDO
@@ -1399,15 +1098,12 @@ SUBROUTINE rhoz_or_updw( rho, sp, dir )
   ENDIF
   IF ( sp /= 'only_r' ) THEN
      !
-    !$acc parallel loop present_or_copy(rho%of_g)
      DO ir = 1, ngm
         rho%of_g(ir,1) = ( rho%of_g(ir,1) + rho%of_g(ir,nspin) ) * vi
         rho%of_g(ir,nspin) = rho%of_g(ir,1) - rho%of_g(ir,nspin) * vi * 2._dp
      ENDDO
      !
   ENDIF
-  !
- !$acc end data
   !
   RETURN
   !

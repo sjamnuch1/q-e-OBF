@@ -100,7 +100,6 @@ cat > Al001_bc2_FCP_v00.in << EOF
   assume_isolated='esm', esm_bc='bc2'
 /
 &electrons
-  diagonalization = 'rmm-davidson'
   mixing_beta = 0.3
 /
 &ions
@@ -153,14 +152,13 @@ cat > Al001_bc2_FCP_vp05.in << EOF
   assume_isolated='esm', esm_bc='bc2'
 /
 &electrons
-  diagonalization = 'rmm-davidson'
   mixing_beta = 0.3
 /
 &ions
   ion_dynamics = 'bfgs'
 /
 &fcp
-  fcp_mu = -4.7510,
+  fcp_mu = -3.7510,
   fcp_dynamics = 'bfgs',
   fcp_conv_thr = 1.d-2,
   freeze_all_atoms = .TRUE.
@@ -206,14 +204,13 @@ cat > Al001_bc2_FCP_vm05.in << EOF
   assume_isolated='esm', esm_bc='bc2'
 /
 &electrons
-  diagonalization = 'rmm-davidson'
   mixing_beta = 0.3
 /
 &ions
   ion_dynamics = 'bfgs'
 /
 &fcp
-  fcp_mu = -3.7510,
+  fcp_mu = -4.7510,
   fcp_dynamics = 'bfgs',
   fcp_conv_thr = 1.d-2,
   freeze_all_atoms = .TRUE.
@@ -259,7 +256,6 @@ cat > Al001_bc3_FCP_v00.in << EOF
   assume_isolated='esm', esm_bc='bc3'
 /
 &electrons
-  diagonalization = 'rmm-davidson'
   mixing_beta = 0.3
 /
 &ions
@@ -312,14 +308,13 @@ cat > Al001_bc3_FCP_vp05.in << EOF
   assume_isolated='esm', esm_bc='bc3'
 /
 &electrons
-  diagonalization = 'rmm-davidson'
   mixing_beta = 0.3
 /
 &ions
   ion_dynamics = 'bfgs'
 /
 &fcp
-  fcp_mu = -4.7490,
+  fcp_mu = -3.7490,
   fcp_dynamics = 'bfgs',
   fcp_conv_thr = 1.d-2,
   freeze_all_atoms = .TRUE.
@@ -365,14 +360,13 @@ cat > Al001_bc3_FCP_vm05.in << EOF
   assume_isolated='esm', esm_bc='bc3'
 /
 &electrons
-  diagonalization = 'rmm-davidson'
   mixing_beta = 0.3
 /
 &ions
   ion_dynamics = 'bfgs'
 /
 &fcp
-  fcp_mu = -3.7490,
+  fcp_mu = -4.7490,
   fcp_dynamics = 'bfgs',
   fcp_conv_thr = 1.d-2,
   freeze_all_atoms = .TRUE.

@@ -1,5 +1,5 @@
 !
-! Copyright (C) 2008-2025 Quantum ESPRESSO Foundation
+! Copyright (C) 2008-2010 Quantum ESPRESSO group
 ! This file is distributed under the terms of the
 ! GNU General Public License. See the file `License'
 ! in the root directory of the present distribution,
@@ -514,15 +514,13 @@ CONTAINS
     !! Initialize arrays needed for parallel symmetrization
     ! 
     USE parallel_include
-    USE mp, ONLY : mp_min, mp_max
-    USE mp_bands, ONLY : nproc_bgrp, intra_bgrp_comm
+    USE mp_bands, ONLY : nproc_bgrp, me_bgrp, intra_bgrp_comm
     USE gvect, ONLY : ngm, gcutm, g, gg
     !
     IMPLICIT NONE
     !
     REAL(DP), PARAMETER :: twothirds = 0.6666666666666666_dp
     REAL(DP), ALLOCATABLE :: gcut_(:), g_(:,:)
-    REAL(DP) :: gtop, gnext
     INTEGER :: np, ig, ngloc, ngpos, ierr, ngm_
     !
     ALLOCATE( sendcnt(nproc_bgrp), recvcnt(nproc_bgrp), &
@@ -530,58 +528,14 @@ CONTAINS
     ALLOCATE( gcut_(nproc_bgrp) )
     !
     ! the gcut_ cutoffs are estimated in such a way that there is an similar
-    ! number of G-vectors in each "slice" with gcut_(i) < G^2 < gcut_(i+1)
+    ! number of G-vectors in each shell gcut_(i) < G^2 < gcut_(i+1)
     !
     DO np = 1, nproc_bgrp
        gcut_(np) = gcutm * np**twothirds/nproc_bgrp**twothirds
     END DO
     !
-    ! the next lines prevent an unlikely but not impossible case:
-    ! some gcut_ value (see above) cuts a shell of G-vectors in the middle
-    ! This may happen if G-vector ordering with |G| is not perfect
-    !
-    ierr = 0
-10  ierr = ierr+1
-    IF ( ierr > 5 ) CALL errore('sym_rho_init', &
-         'internal error: G-vector distribution failed', ierr)
-    ngpos=0
-    gtop = 0.0_dp
-    gnext= 0.0_dp
-    DO np = 1, nproc_bgrp-1
-       ngloc=0
-cutg:  DO ig=ngpos+1,ngm
-          IF ( gg(ig) > gcut_(np) ) THEN
-             ! this is to prevent an unlikely out-of-bound error
-             IF ( ig > 1 ) THEN
-                gtop = gg(ig-1)
-             ELSE
-                gtop = gcut_(np)
-             END IF
-             gnext = gg(ig)
-             EXIT cutg
-          END IF
-          ngloc = ngloc+1
-       END DO cutg
-       IF ( ngloc < 1 ) CALL infomsg('sym_rho_init', &
-            'some processors have no G-vectors for symmetrization')
-       ngpos = ngpos + ngloc
-       IF ( ngpos > ngm ) &
-            CALL errore('sym_rho_init','internal error : too many G-vectors', ngpos)
-       ! Note that gnext > gtop only for perfect ordering
-       CALL mp_max( gtop , intra_bgrp_comm)
-       CALL mp_min( gnext, intra_bgrp_comm)
-       ! The following criterion is rather arbitrary:
-       ! the quantity at the rhs below should be as small as possible,
-       ! but larger than the expected numerical noise
-       IF ( ABS ( gnext-gtop ) < 1.0e-7*gcut_(np) ) THEN
-          ! The largest vector in this slice is too close to the smallest one
-          ! in the next slice: raise the gcut_ for this slice, check again
-          gcut_(np) = MAX(gnext,gtop)
-          GO TO 10
-       END IF
-    END DO
-    !
-    ! now find the number of G-vectors in each "slice"
+    ! find the number of G-vectors in each shell (defined as above)
+    ! beware: will work only if G-vectors are in order of increasing |G|
     !
     ngpos=0
     DO np = 1, nproc_bgrp
@@ -591,8 +545,12 @@ cutg:  DO ig=ngpos+1,ngm
           IF ( gg(ig) > gcut_(np) ) EXIT
           ngloc = ngloc+1
        END DO
+       IF ( ngloc < 1 ) CALL infomsg('sym_rho_init', &
+            'some processors have no G-vectors for symmetrization')
        sendcnt(np) = ngloc
        ngpos = ngpos + ngloc
+       IF ( ngpos > ngm ) &
+            CALL errore('sym_rho','internal error: too many G-vectors', ngpos)
     END DO
     IF ( ngpos /= ngm .OR. ngpos /= SUM (sendcnt)) &
          CALL errore('sym_rho_init', &
@@ -646,7 +604,8 @@ cutg:  DO ig=ngpos+1,ngm
     !-----------------------------------------------------------------------
     !! Initialize G-vector shells needed for symmetrization.
     ! 
-    USE mp_bands,  ONLY : nproc_bgrp, me_bgrp
+    USE constants, ONLY : eps8
+    USE mp_bands,  ONLY : nproc_bgrp
     !
     IMPLICIT NONE
     !
@@ -688,7 +647,7 @@ cutg:  DO ig=ngpos+1,ngm
        ALLOCATE ( g2sort_g(ngm_))
        g2sort_g(:)=g_(1,:)*g_(1,:)+g_(2,:)*g_(2,:)+g_(3,:)*g_(3,:)
        igsort(1) = 0
-       CALL hpsort( ngm_, g2sort_g, igsort )
+       CALL hpsort_eps( ngm_, g2sort_g, igsort, eps8 )
        DEALLOCATE( g2sort_g)
     ELSE
        DO ig=1,ngm_
@@ -750,7 +709,7 @@ gloop:    DO jg=iig,ngm_
   END SUBROUTINE sym_rho_init_shells
   !
   !-----------------------------------------------------------------------
-  SUBROUTINE sym_rho (nspin, rhog, is_sym )
+  SUBROUTINE sym_rho (nspin, rhog)
     !-----------------------------------------------------------------------
     !! Symmetrize the charge density rho in reciprocal space.
     !
@@ -758,6 +717,7 @@ gloop:    DO jg=iig,ngm_
     !! and corresponding rho(G), calls sym_rho_serial to perform the
     !! symmetrization, re-distributed rho(G) into original ordering.  
     !
+    USE constants,            ONLY : eps8, eps6
     USE gvect,                ONLY : ngm, g
     USE parallel_include
     USE mp_bands,             ONLY : intra_bgrp_comm
@@ -770,8 +730,6 @@ gloop:    DO jg=iig,ngm_
     COMPLEX(DP), INTENT(INOUT) :: rhog(ngm,nspin)
     !! components of rho: rhog(ig) = rho(G(:,ig)). 
     !! Unsymmetrized on input, symmetrized on output
-    INTEGER, INTENT(IN), OPTIONAL :: is_sym( nsym )
-    !! symmetry operations used for symmetrization (1 = yes, 0 = no)
     !
     ! ... local variables
     !
@@ -783,7 +741,7 @@ gloop:    DO jg=iig,ngm_
     IF ( no_rho_sym) RETURN
 #if !defined(__MPI)
     !
-    CALL sym_rho_serial ( ngm, g, nspin, rhog, is_sym )
+    CALL sym_rho_serial ( ngm, g, nspin, rhog )
     !
 #else
     !
@@ -807,7 +765,7 @@ gloop:    DO jg=iig,ngm_
     !
     !   Now symmetrize
     !
-    CALL sym_rho_serial ( ngm_, g_, nspin, rhog_, is_sym )
+    CALL sym_rho_serial ( ngm_, g_, nspin, rhog_ )
     !
     DEALLOCATE ( g_ )
     !
@@ -829,14 +787,12 @@ gloop:    DO jg=iig,ngm_
   END SUBROUTINE sym_rho
   !
   !-----------------------------------------------------------------------
-  SUBROUTINE sym_rho_serial ( ngm_, g_, nspin_, rhog_, is_sym )
+  SUBROUTINE sym_rho_serial ( ngm_, g_, nspin_, rhog_ )
     !-----------------------------------------------------------------------
     !! Symmetrize the charge density rho in reciprocal space.    
     !
     USE kinds
     USE constants,   ONLY : tpi
-    USE noncollin_module, ONLY : colin_mag
-    USE io_global,       ONLY : stdout 
     !
     IMPLICIT NONE
     !
@@ -849,8 +805,6 @@ gloop:    DO jg=iig,ngm_
     COMPLEX(DP), INTENT(INOUT) :: rhog_( ngm_, nspin_ )
     !! rho in reciprocal space: rhog_(ig) = rho(G(:,ig)). 
     !! Unsymmetrized on input, symmetrized on output
-    INTEGER, INTENT(IN), OPTIONAL :: is_sym( nsym )
-    !! symmetry operations used for symmetrization (1 = yes, 0 = no)
     !
     ! ... local variables
     !
@@ -860,19 +814,10 @@ gloop:    DO jg=iig,ngm_
     INTEGER :: irot(48), ig, isg, igl, ng, ns, nspin_lsda, is
     LOGICAL, ALLOCATABLE :: done(:)
     LOGICAL :: non_symmorphic(48)
-    INTEGER :: nsym_used, use_sym(nsym)
-    !
-    IF ( PRESENT( is_sym ) ) THEN
-       use_sym(1:nsym) = is_sym(1:nsym)
-    ELSE
-       use_sym(1:nsym) = 1
-    END IF
-    nsym_used = SUM ( use_sym(1:nsym) )
     !
     ! convert fractional translations to cartesian, in a0 units
     !
     DO ns=1,nsym
-       IF ( use_sym(ns) == 0 ) CYCLE
        non_symmorphic(ns) = ( ft(1,ns) /= 0.0_dp .OR. &
                               ft(2,ns) /= 0.0_dp .OR. &
                               ft(3,ns) /= 0.0_dp )
@@ -883,6 +828,7 @@ gloop:    DO jg=iig,ngm_
     !
     IF ( nspin_ == 4 ) THEN
        nspin_lsda = 1
+       !
     ELSE IF ( nspin_ == 1 .OR. nspin_ == 2 ) THEN
        nspin_lsda = nspin_
     ELSE
@@ -915,7 +861,7 @@ gloop:    DO jg=iig,ngm_
              magsum(:) = (0.0_dp, 0.0_dp)
              ! S^{-1} are needed here
              DO ns=1,nsym
-                IF ( use_sym(ns) == 0 ) CYCLE
+
                 sg(:) = s(:,1,invs(ns)) * g0(1,ig) + &
                         s(:,2,invs(ns)) * g0(2,ig) + &
                         s(:,3,invs(ns)) * g0(3,ig)
@@ -956,43 +902,28 @@ gloop:    DO jg=iig,ngm_
                                  g_(2,isg) * ft_(2,ns) + &
                                  g_(3,isg) * ft_(3,ns) )
                    fact = CMPLX ( COS(arg), -SIN(arg), KIND=dp )
-                   ! time-reversal for collinear case
-                   IF ( (colin_mag == 2) .AND. (t_rev(invs(ns)) == 1) ) THEN
-                      rhosum(1) = rhosum(1) + rhog_(isg, 2) * fact
-                      rhosum(2) = rhosum(2) + rhog_(isg, 1) * fact
-                   ! other cases
-                   ELSE
-                      DO is=1,nspin_lsda
-                         rhosum(is) = rhosum(is) + rhog_(isg, is) * fact
-                      END DO
-                   END IF
+                   DO is=1,nspin_lsda
+                      rhosum(is) = rhosum(is) + rhog_(isg, is) * fact
+                   END DO
                    IF ( nspin_ == 4 ) &
                         magsum(:) = magsum(:) + magrot(:) * fact
                 ELSE
-                   ! time-reversal for collinear case
-                   IF ( (colin_mag == 2) .AND. (t_rev(invs(ns)) == 1)) THEN
-                      rhosum(1) = rhosum(1) + rhog_(isg, 2)
-                      rhosum(2) = rhosum(2) + rhog_(isg, 1)
-                   ! other cases
-                   ELSE
-                      DO is=1,nspin_lsda
-                         rhosum(is) = rhosum(is) + rhog_(isg, is)
-                      END DO
-                   END IF
+                   DO is=1,nspin_lsda
+                      rhosum(is) = rhosum(is) + rhog_(isg, is)
+                   END DO
                    IF ( nspin_ == 4 ) &
                         magsum(:) = magsum(:) + magrot(:)
                 END IF
              END DO
              !
              DO is=1,nspin_lsda
-                rhosum(is) = rhosum(is) / nsym_used
+                rhosum(is) = rhosum(is) / nsym
              END DO
-             IF ( nspin_ == 4 ) magsum(:) = magsum(:) / nsym_used
+             IF ( nspin_ == 4 ) magsum(:) = magsum(:) / nsym
              !
              !  now fill the shell of G-vectors with the symmetrized value
              !
              DO ns=1,nsym
-                IF ( use_sym(ns) == 0 ) CYCLE
                 isg = shell(igl)%vect(irot(ns))
                 IF ( nspin_ == 4 ) THEN
                    ! rotate magnetization
@@ -1011,28 +942,18 @@ gloop:    DO jg=iig,ngm_
                                  g_(2,isg) * ft_(2,ns) + &
                                  g_(3,isg) * ft_(3,ns) )
                    fact = CMPLX ( COS(arg), SIN(arg), KIND=dp )
-                   if ( (colin_mag == 2) .AND. (t_rev(invs(ns)) == 1) ) THEN
-                      rhog_(isg, 1) = rhosum(2) * fact
-                      rhog_(isg, 2) = rhosum(1) * fact
-                   ELSE
-                      DO is=1,nspin_lsda
-                         rhog_(isg,is) = rhosum(is) * fact
-                      END DO
-                   END IF
+                   DO is=1,nspin_lsda
+                      rhog_(isg,is) = rhosum(is) * fact
+                   END DO
                    IF ( nspin_ == 4 ) THEN
                       DO is=2,nspin_
                          rhog_(isg, is) = mag(is-1)*fact
                       END DO
                    END IF
                 ELSE
-                   IF ( (colin_mag == 2) .AND. (t_rev(invs(ns)) == 1) ) THEN
-                      rhog_(isg, 1) = rhosum(2)
-                      rhog_(isg, 2) = rhosum(1)
-                   ELSE
-                      DO is=1,nspin_lsda
-                         rhog_(isg,is) = rhosum(is)
-                      END DO
-                   END IF
+                   DO is=1,nspin_lsda
+                      rhog_(isg,is) = rhosum(is)
+                   END DO
                    IF ( nspin_ == 4 ) THEN
                       DO is=2,nspin_
                          rhog_(isg, is) = mag(is-1)

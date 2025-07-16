@@ -25,18 +25,17 @@ MODULE klist
   !! smearing type
   REAL(DP) :: xk(3,npk)
   !! coordinates of k points
+  !!SJ
+    REAL(DP) :: qk(3,npk)
+  !! coordinates of k points for shirley grid
   REAL(DP) :: wk(npk)
   !! weight of k points
   REAL(DP) :: xqq(3)
   !! coordinates of q point (used in the ACFDT part)
   REAL(DP) :: degauss
   !! smearing parameter
-  REAL(DP) :: degauss_cond
-  !! smearing parameter for conduction bands in the case of two chemical potentials
   REAL(DP) :: nelec
   !! number of electrons
-  REAL(DP) :: nelec_cond
-  !! number of electrons in the conduction bands in the case of two chemical potentials 
   REAL(DP) :: nelup=0.0_dp
   !! number of spin-up electrons (if two_fermi_energies=t)
   REAL(DP) :: neldw=0.0_dp
@@ -46,12 +45,17 @@ MODULE klist
   REAL(DP) :: tot_charge
   !! total charge
   REAL(DP) :: qnorm= 0.0_dp
-  !! |q|, used in EXX+US and phonon+US calculations only
+  !! |q|, used in phonon+US calculations only
   INTEGER, ALLOCATABLE :: igk_k(:,:)
   !! index of G corresponding to a given index of k+G
   INTEGER, ALLOCATABLE :: ngk(:)
   !! number of plane waves for each k point
+  INTEGER, ALLOCATABLE :: igk_k_d(:,:)
+  !! device copy of igk
+  INTEGER, ALLOCATABLE :: ngk_d(:)
+  !! device copy of ngk
 #if defined (__CUDA)
+  attributes(DEVICE) :: igk_k_d, ngk_d
   attributes(PINNED) :: igk_k
 #endif
   !
@@ -59,6 +63,9 @@ MODULE klist
   !! number of k points in this pool
   INTEGER :: nkstot
   !! total number of k points
+  !!SJ
+  INTEGER :: nksinterp_shirley
+  !! total number of k points for SIMPLE from K_POINTS_SIMPLE card
   INTEGER :: ngauss
   !! type of smearing technique
   LOGICAL :: lgauss
@@ -66,7 +73,7 @@ MODULE klist
   LOGICAL :: ltetra
   !! if .TRUE.: use tetrahedra
   LOGICAL :: lxkcry=.FALSE.
-  !! if .TRUE.:k-points in cryst. basis accepted in input
+  !! if .TRUE.:k-pnts in cryst. basis accepted in input
   LOGICAL :: two_fermi_energies
   !! if .TRUE.: nelup and neldw set ef_up and ef_dw separately
   !
@@ -100,23 +107,34 @@ CONTAINS
     ! ... or else there will be problems with variable-cell calculations
     !
     DO ik = 1, nks
+       !SJ WRITE(6,*) 'Calling gk_sort with xk(1,ik)', xk(1,ik)
        CALL gk_sort( xk(1,ik), ngm, g, gcutw, ngk(ik), igk_k(1,ik), gk )
     ENDDO
     !$acc update device(igk_k)
     !
     DEALLOCATE( gk )
+#if defined (__CUDA)
+    IF(ALLOCATED(igk_k_d)) DEALLOCATE(igk_k_d)
+    IF (nks > 0) ALLOCATE ( igk_k_d, source=igk_k)
+    IF(ALLOCATED(ngk_d)) DEALLOCATE(ngk_d)
+    IF (nks > 0) ALLOCATE ( ngk_d, source=ngk)
+#endif
     !
   END SUBROUTINE init_igk
   !
+!-----------------------------------------------
   SUBROUTINE deallocate_igk( )
     !
     IF (ALLOCATED(ngk))     DEALLOCATE( ngk )
     !
     !$acc exit data delete(igk_k)
     IF (ALLOCATED(igk_k))   DEALLOCATE( igk_k )
+    IF (ALLOCATED(igk_k_d)) DEALLOCATE( igk_k_d )
+    !
+    IF (ALLOCATED(ngk_d))   DEALLOCATE( ngk_d )
     !
   END SUBROUTINE deallocate_igk
-  !
+!-----------------------------------------------
   !
 END MODULE klist
 !
@@ -261,6 +279,8 @@ MODULE vlocal
   !! the structure factor
   REAL(DP), ALLOCATABLE :: vloc(:,:)
   !! the local potential for each atom type
+  REAL(DP) :: starting_charge(ntypx)
+  !! the atomic charge used to start with
   !
 END MODULE vlocal
 !
@@ -280,13 +300,11 @@ MODULE wvfct
   !! max number of bands use in iterative diag
   INTEGER ::  nbnd
   !! number of bands
-  INTEGER :: nbnd_cond
-  !! number of conduction bands for the case of two chemical potentials
   INTEGER ::  npw
   !! the number of plane waves
   INTEGER ::  current_k
   !! the index of k-point under consideration
-  REAL(DP), ALLOCATABLE :: et(:,:)
+  REAL(DP), ALLOCATABLE :: et(:,:) ! nbnd x nkstot
   !! eigenvalues of the hamiltonian
   REAL(DP), ALLOCATABLE :: wg(:,:)
   !! the weight of each k point and band
@@ -295,6 +313,9 @@ MODULE wvfct
   INTEGER, ALLOCATABLE :: btype(:,:)
   !! one if the corresponding state has to be
   !! converged to full accuracy, zero otherwise
+#if defined(__CUDA)
+  attributes(pinned) :: g2kin, et, wg
+#endif
   !
 END MODULE wvfct
 !
@@ -321,6 +342,8 @@ MODULE ener
   REAL(DP) :: etxc
   !! the exchange and correlation energy
   REAL(DP) :: vtxc
+  !! another exchange-correlation energy
+  REAL(DP) :: etxcc
   !! the nlcc exchange and correlation
   REAL(DP) :: ewld
   !! the ewald energy
@@ -331,10 +354,6 @@ MODULE ener
   REAL(DP) :: exdm
   !! the XDM dispersion energy
   REAL(DP) :: demet
-  !! the sic energy
-  REAL(DP) :: esic
-  !! the scissor energy
-  REAL(DP) :: esci
   !! variational correction ("-TS") for metals
   REAL(DP) :: epaw
   !! sum of one-center paw contributions
@@ -346,14 +365,6 @@ MODULE ener
   !! the Fermi energy down (if two_fermi_energies=.TRUE.)
   REAL(DP) :: egrand
   !! the Potentiostat contribution for GC-SCF
-  REAL(DP) :: esol
-  !! the solvation energy, from 3D-RISM
-  REAL(DP) :: vsol
-  !! another solvation energy, from 3D-RISM
-  REAL(DP) :: ef_cond
-  !! the conduction band chemical potential for a two chemical potential simulation
-  REAL(DP) :: etxcc = 0.0
-  !! obsolete exchange-correlation energy term for core correction - unused
   !
 END MODULE ener
 !
@@ -380,7 +391,6 @@ MODULE force_mod
   COMPLEX(DP), ALLOCATABLE :: overlap_inv(:,:)
   !! overlap matrix (transposed): (O^{-1/2})^T
   COMPLEX(DP), ALLOCATABLE :: doverlap_inv(:,:)
-  !$acc declare device_resident(doverlap_inv)
   !! derivative of the overlap matrix (not transposed): d(O^{-1/2})
   COMPLEX (DP), ALLOCATABLE :: at_dy(:,:), at_dj(:,:)
   !! derivatives of spherical harmonics and spherical Bessel functions (for atomic functions)

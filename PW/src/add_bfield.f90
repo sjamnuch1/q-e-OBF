@@ -33,6 +33,10 @@ SUBROUTINE add_bfield( v, rho )
   USE mp,               ONLY : mp_sum
   USE noncollin_module, ONLY : bfield, lambda, i_cons, mcons, &
                                pointlist, factlist, noncolin
+
+  !SJ
+  USE control_flags,        ONLY : lsimple
+  !SJ
   !
   IMPLICIT NONE
   !
@@ -49,6 +53,7 @@ SUBROUTINE add_bfield( v, rho )
   !
   !
   etcon=0.D0
+!  WRITE(stdout,*) 'In add_bfield nspin ',nspin,'i_cons',i_cons
   !
   IF (nspin==1 .OR. i_cons==0)  RETURN
   ! i_cons==0, no constraint
@@ -109,10 +114,7 @@ SUBROUTINE add_bfield( v, rho )
         !
         DO ir = 1, dfftp%nnr
            IF (pointlist(ir) == 0 ) CYCLE
-           ! The omega/(n1*n2*n3) factor had no justification and has been
-           ! removed after v.7.3.1 - Noticed by Tae Yun Kim
-           ! fact = 2.D0*lambda*factlist(ir)*omega/(dfftp%nr1*dfftp%nr2*dfftp%nr3)
-           fact = 2.D0*lambda*factlist(ir)
+           fact = 2.D0*lambda*factlist(ir)*omega/(dfftp%nr1*dfftp%nr2*dfftp%nr3)
            DO ipol = 1,3
               v(ir,ipol+1) = v(ir,ipol+1) + fact*m2(ipol,pointlist(ir))
            ENDDO       ! ipol
@@ -122,8 +124,7 @@ SUBROUTINE add_bfield( v, rho )
         !
         DO ir = 1, dfftp%nnr
            IF (pointlist(ir) == 0 ) CYCLE
-           ! As above: factor omega/(n1*n2*n3) removed
-           fact = 2.D0*lambda*factlist(ir)
+           fact = 2.D0*lambda*factlist(ir)*omega/(dfftp%nr1*dfftp%nr2*dfftp%nr3)
            v(ir,1) = v(ir,1) + fact*m2(1,pointlist(ir))
            v(ir,2) = v(ir,2) - fact*m2(1,pointlist(ir))
         ENDDO      ! points

@@ -1,0 +1,57 @@
+&control
+  calculation = 'nscf'
+  prefix = 'system'
+  pseudo_dir = './'
+  outdir = './Out'
+  wfcdir = 'undefined'
+  tstress = .false.
+  tprnfor = .true.
+  wf_collect = .true.
+  disk_io = 'low'
+/
+&system
+  ibrav = 0
+  nat = 2
+  ntyp = 2
+  noncolin = .false.
+  lspinorb = .false.
+  ecutwfc = 100
+  occupations = 'fixed'
+  smearing = 'gaussian'
+  degauss = 0.002
+  nspin  = 1
+  tot_charge  = 0.0
+  nosym = .true.
+  noinv = .true.
+  nbnd = 25
+/
+&electrons
+  conv_thr = 1.0d-10
+  mixing_beta = 0.7
+  electron_maxstep = 50
+  startingwfc = 'atomic+random'
+  startingpot = 'file'
+  diagonalization = 'david'
+/
+&ions
+/
+ATOMIC_SPECIES
+ Li    6.9410   03-li.lda.fhi.UPF
+ F   18.9984   09-f.lda.fhi.UPF
+CELL_PARAMETERS cubic
+   0.0000000000000000        3.7983492370000000        3.7983492370000000     
+   3.7983492370000000        0.0000000000000000        3.7983492370000000     
+   3.7983492370000000        3.7983492370000000        0.0000000000000000     
+ATOMIC_POSITIONS crystal
+Li     0.5000000000     0.5000000000     0.5000000000
+F     0.0000000000     0.0000000000     0.0000000000
+K_POINTS crystal
+8
+ 0.00000  0.00000  0.00000  1.0
+ 0.00000  1.00000  1.00000  1.0
+ 1.00000  0.00000  1.00000  1.0
+ 1.00000  1.00000  0.00000  1.0
+ 1.00000  0.00000  0.00000  1.0
+ 0.00000  1.00000  0.00000  1.0
+ 0.00000  0.00000  1.00000  1.0
+ 1.00000  1.00000  1.00000  1.0

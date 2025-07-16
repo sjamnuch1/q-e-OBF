@@ -1,5 +1,5 @@
 !
-! Copyright (C) 2001-2022 Quantum ESPRESSO group
+! Copyright (C) 2007-2010 Quantum ESPRESSO group
 ! This file is distributed under the terms of the
 ! GNU General Public License. See the file `License'
 ! in the root directory of the present distribution,
@@ -34,7 +34,7 @@ SUBROUTINE PAW_symmetrize( becsum )
     !
     USE lsda_mod,          ONLY : nspin
     USE cell_base,         ONLY : at, bg
-    USE noncollin_module,  ONLY : nspin_lsda, domag, colin_mag
+    USE noncollin_module,  ONLY : nspin_lsda, domag
     USE uspp_param,        ONLY : nhm
     USE ions_base,         ONLY : nat, ityp
     USE symm_base,         ONLY : nsym, irt, d1, d2, d3, t_rev, sname, s, &
@@ -54,7 +54,7 @@ SUBROUTINE PAW_symmetrize( becsum )
     !
     INTEGER :: ia,mykey,ia_s,ia_e 
     !                       ! atoms counters and indexes
-    INTEGER :: is, is2, nt  ! counters on spin, atom-type
+    INTEGER :: is, nt       ! counters on spin, atom-type
     INTEGER :: ma           ! atom symmetric to na
     INTEGER :: ih,jh, ijh   ! counters for augmentation channels
     INTEGER :: lm_i, lm_j, &! angular momentums of non-symmetrized becsum
@@ -66,7 +66,7 @@ SUBROUTINE PAW_symmetrize( becsum )
     INTEGER :: table(48,48)
     !
     ! The following mess is necessary because the symmetrization operation
-    ! in DFT+Hubbard code is simpler than in PAW, so the required quantities are
+    ! in LDA+U code is simpler than in PAW, so the required quantities are
     ! represented in a simple but not general way.
     ! I will fix this when everything works.
     REAL(DP), TARGET :: d0(1,1,48)
@@ -126,13 +126,6 @@ SUBROUTINE PAW_symmetrize( becsum )
              m_j   = lm_j - l_j**2  
              !  
              DO isym = 1,nsym  
-                ! spin-flip in collinar case
-                IF ( (colin_mag==2) .AND. (t_rev(isym) == 1) ) THEN
-                   is2 = 3-is
-                ELSE
-                   is2 = is
-                END IF 
-        
                 ma = irt(isym,ia)  
                 DO m_o = 1, 2*l_i +1  
                 DO m_u = 1, 2*l_j +1  
@@ -149,7 +142,7 @@ SUBROUTINE PAW_symmetrize( becsum )
                    !  
                    becsym(ijh, ia, is) = becsym(ijh, ia, is) &  
                        + D(l_i)%d(m_o,m_i, isym) * D(l_j)%d(m_u,m_j, isym) &  
-                         * pref * becsum(ouh, ma, is2)  
+                         * pref * becsum(ouh, ma, is)  
                 ENDDO ! m_o  
                 ENDDO ! m_u  
              ENDDO ! isym  
@@ -303,7 +296,7 @@ SUBROUTINE PAW_symmetrize_ddd( ddd )
     !
     USE lsda_mod,          ONLY : nspin
     USE cell_base,         ONLY : at, bg
-    USE noncollin_module,  ONLY : nspin_lsda, domag, colin_mag
+    USE noncollin_module,  ONLY : nspin_lsda, domag
     USE uspp_param,        ONLY : nhm
     USE ions_base,         ONLY : nat, ityp
     USE symm_base,         ONLY : nsym, irt, d1, d2, d3, t_rev, sname, s, &
@@ -324,7 +317,7 @@ SUBROUTINE PAW_symmetrize_ddd( ddd )
     !
     INTEGER :: ia, mykey, ia_s, ia_e 
     !                       ! atoms counters and indexes
-    INTEGER :: is, is2, nt  ! counters on spin, atom-type
+    INTEGER :: is, nt       ! counters on spin, atom-type
     INTEGER :: ma           ! atom symmetric to na
     INTEGER :: ih,jh, ijh   ! counters for augmentation channels
     INTEGER :: lm_i, lm_j, &! angular momentums of non-symmetrized becsum
@@ -336,7 +329,7 @@ SUBROUTINE PAW_symmetrize_ddd( ddd )
     INTEGER :: table(48,48)
     !
     ! The following mess is necessary because the symmetrization operation
-    ! in DFT+Hubbard code is simpler than in PAW, so the required quantities are
+    ! in LDA+U code is simpler than in PAW, so the required quantities are
     ! represented in a simple but not general way.
     ! I will fix this when everything works.
     REAL(DP), TARGET :: d0(1,1,48)
@@ -395,13 +388,6 @@ SUBROUTINE PAW_symmetrize_ddd( ddd )
              m_j   = lm_j - l_j**2
              !
              DO isym = 1,nsym
-                ! spin-flip in collinar case
-                IF ( (colin_mag==2) .AND. (t_rev(isym) == 1) ) THEN
-                   is2 = 3-is
-                ELSE
-                   is2 = is
-                END IF 
-        
                 ma = irt(isym,ia)
                 DO m_o = 1, 2*l_i +1
                 DO m_u = 1, 2*l_j +1
@@ -411,7 +397,7 @@ SUBROUTINE PAW_symmetrize_ddd( ddd )
                     !
                     dddsym(ijh, ia, is) = dddsym(ijh, ia, is) &
                         + D(l_i)%d(m_o,m_i, isym) * D(l_j)%d(m_u,m_j, isym) &
-                          * usym * ddd(ouh, ma, is2)
+                          * usym * ddd(ouh, ma, is)
                 ENDDO ! m_o
                 ENDDO ! m_u
              ENDDO ! isym
@@ -582,7 +568,7 @@ SUBROUTINE PAW_desymmetrize( dbecsum )
     INTEGER :: table(48, 48)
     !
     ! The following mess is necessary because the symmetrization operation
-    ! in DFT+Hubbard code is simpler than in PAW, so the required quantities are
+    ! in LDA+U code is simpler than in PAW, so the required quantities are
     ! represented in a simple but not general way.
     ! I will fix this when everything works.
     REAL(DP), TARGET :: d0(1,1,48)
@@ -880,7 +866,7 @@ SUBROUTINE PAW_dusymmetrize( dbecsum, npe, irr, npertx, nsymq, rtau, xq, t )
     INTEGER :: table(48,48)
     !
     ! The following mess is necessary because the symmetrization operation
-    ! in DFT+Hubbard code is simpler than in PAW, so the required quantities are
+    ! in LDA+U code is simpler than in PAW, so the required quantities are
     ! represented in a simple but not general way.
     ! I will fix this when everything works.
     REAL(DP), TARGET :: d0(1,1,48)
@@ -1188,7 +1174,7 @@ SUBROUTINE PAW_dumqsymmetrize( dbecsum, npe, irr, npertx, isymq, rtau, xq, tmq )
     COMPLEX(DP) :: fase(nat)
     !
     ! The following mess is necessary because the symmetrization operation
-    ! in DFT+Hubbard code is simpler than in PAW, so the required quantities are
+    ! in LDA+U code is simpler than in PAW, so the required quantities are
     ! represented in a simple but not general way.
     ! I will fix this when everything works.
     REAL(DP), TARGET :: d0(1,1,48)

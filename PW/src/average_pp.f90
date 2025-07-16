@@ -13,7 +13,6 @@ SUBROUTINE average_pp( ntyp )
   USE kinds,            ONLY : DP
   USE atom,             ONLY : rgrid
   USE uspp_param,       ONLY : upf
-  USE ldaU,             ONLY : lda_plus_u
   !
   IMPLICIT NONE
   !
@@ -30,8 +29,8 @@ SUBROUTINE average_pp( ntyp )
      !
      IF ( upf(nt)%has_so ) THEN
         !
-        IF ( upf(nt)%tvanp .or. lda_plus_u) &
-                CALL errore( 'average_pp', 'Fully relativistic PPs, need spin-orbit calc. (lspinorb=.true.)', 1 )
+        IF ( upf(nt)%tvanp ) &
+             CALL errore( 'average_pp', 'FR-PP please use lspinorb=.true.', 1 )
         !
         nbe = 0
         !

@@ -1,5 +1,5 @@
 !
-! Copyright (C) 2001-2025 Quantum ESPRESSO group
+! Copyright (C) 2001-2020 Quantum ESPRESSO group
 ! This file is distributed under the terms of the
 ! GNU General Public License. See the file `License'
 ! in the root directory of the present distribution,
@@ -19,33 +19,19 @@ SUBROUTINE init_ns
    USE kinds,        ONLY : DP
    USE ions_base,    ONLY : nat, ityp
    USE lsda_mod,     ONLY : nspin, starting_magnetization
-   USE ldaU,         ONLY : Hubbard_l, Hubbard_l2, Hubbard_l3, hubbard_occ, &
-                            is_hubbard, is_hubbard_back, ldim_back, backall, &
-                            Hubbard_lmax
+   USE ldaU,         ONLY : Hubbard_l, Hubbard_l_back, Hubbard_l1_back, &
+                            is_hubbard, is_hubbard_back, ldim_back, backall
    USE scf,          ONLY : rho
    USE uspp_param,   ONLY : upf
-   USE io_global,    ONLY : stdout
-#if defined (__OSCDFT)
-   USE plugin_flags,     ONLY : use_oscdft
-   USE oscdft_base,      ONLY : oscdft_ctx
-   USE oscdft_functions, ONLY : oscdft_ns_set
-#endif
    !
    IMPLICIT NONE
    !
    REAL(DP) :: totoc, totoc_b
+   REAL(DP), EXTERNAL :: hubbard_occ, hubbard_occ_back
    INTEGER :: ldim, na, nt, is, m1, majs, mins
    LOGICAL :: nm        ! true if the atom is non magnetic
    !
    rho%ns(:,:,:,:) = 0.d0
-   !
-#if defined (__OSCDFT)
-   IF (use_oscdft .AND. (oscdft_ctx%inp%oscdft_type==2) .AND. &
-      .NOT.oscdft_ctx%inp%constraint_diag) THEN
-      CALL oscdft_ns_set (oscdft_ctx, Hubbard_lmax, Hubbard_l, rho%ns, 1)
-      RETURN
-   ENDIF
-#endif
    !
    DO na = 1, nat
       !
@@ -54,10 +40,8 @@ SUBROUTINE init_ns
       IF (is_hubbard(nt)) THEN
          !
          ldim = 2*Hubbard_l(nt)+1
-         !
+         totoc = hubbard_occ ( upf(nt)%psd )
          nm = .TRUE.
-         !
-         totoc = hubbard_occ(nt,1)
          !
          IF (nspin==2) THEN
             IF (starting_magnetization(nt) > 0.d0) THEN  
@@ -70,9 +54,7 @@ SUBROUTINE init_ns
                mins = 1  
             ENDIF  
          ENDIF
-         !
          IF (.NOT.nm) THEN  
-            ! Atom is magnetic
             IF (totoc>ldim) THEN  
                DO m1 = 1, ldim  
                   rho%ns(m1,m1,majs,na) = 1.d0  
@@ -84,45 +66,47 @@ SUBROUTINE init_ns
                ENDDO  
             ENDIF  
          ELSE  
-            ! Atom is non-magnetic
             DO is = 1,nspin
                DO m1 = 1, ldim  
                   rho%ns(m1,m1,is,na) = totoc /  2.d0 / ldim
                ENDDO  
             ENDDO  
          ENDIF  
-         ! 
       ENDIF  
       !
       ! Background part
       ! 
       IF (is_hubbard_back(nt)) THEN
          !
+         totoc_b = hubbard_occ_back ( upf(nt)%psd )
          rho%nsb(:,:,:,na) = 0.d0
          !
-         IF (.NOT.backall(nt)) THEN
-            ! Fill in the second Hubbard manifold
-            ldim = ldim_back(nt)
-            totoc_b = hubbard_occ(nt,2)
+         IF (backall(nt)) THEN
             DO is = 1, nspin
-              DO m1 = 1, ldim
-                 rho%nsb (m1, m1, is, na) = totoc_b /  2.d0 / ldim
-              ENDDO
+               ldim = 2*Hubbard_l_back(nt)+1
+               IF (totoc_b*0.9d0.LE.2.d0*ldim) THEN
+                  DO m1 = 1, ldim
+                     rho%nsb (m1, m1, is, na) = totoc_b*0.9d0 /  2.d0 / ldim
+                  ENDDO
+                  ldim = 2*Hubbard_l1_back(nt)+1
+                  DO m1 = 2*Hubbard_l_back(nt)+2, ldim_back(nt)
+                     rho%nsb (m1, m1, is, na) = totoc_b*0.1d0 /  2.d0 / ldim
+                  ENDDO
+               ELSE
+                  DO m1 = 1, ldim
+                     rho%nsb (m1, m1, is, na) = 1.d0
+                  ENDDO
+                  totoc_b = totoc_b - 2.d0*ldim
+                  ldim = 2*Hubbard_l1_back(nt)+1
+                  DO m1 = 2*Hubbard_l_back(nt)+2, ldim_back(nt)
+                     rho%nsb (m1, m1, is, na) = totoc_b /  2.d0 / ldim
+                  ENDDO
+               ENDIF
             ENDDO
          ELSE
-            ! Fill in the second Hubbard manifold
-            ldim = 2*Hubbard_l2(nt)+1
-            totoc_b = hubbard_occ(nt,2)
+            ldim = ldim_back(nt)
             DO is = 1, nspin
               DO m1 = 1, ldim
-                 rho%nsb (m1, m1, is, na) = totoc_b /  2.d0 / ldim
-              ENDDO
-            ENDDO
-            ! Fill in the third Hubbard manifold
-            ldim = 2*Hubbard_l3(nt)+1
-            totoc_b = hubbard_occ(nt,3)
-            DO is = 1, nspin
-              DO m1 = 2*Hubbard_l2(nt)+2, ldim_back(nt)
                  rho%nsb (m1, m1, is, na) = totoc_b /  2.d0 / ldim
               ENDDO
             ENDDO
@@ -145,7 +129,7 @@ SUBROUTINE init_ns_nc
    USE kinds,            ONLY : DP
    USE ions_base,        ONLY : nat, ityp
    USE lsda_mod,         ONLY : nspin, starting_magnetization
-   USE ldaU,             ONLY : hubbard_u, hubbard_l, hubbard_occ
+   USE ldaU,             ONLY : hubbard_u, hubbard_l
    USE noncollin_module, ONLY : angle1, angle2 
    USE scf,              ONLY : rho
    USE uspp_param,       ONLY : upf
@@ -153,6 +137,7 @@ SUBROUTINE init_ns_nc
    IMPLICIT NONE
    !
    REAL(DP) :: totoc, cosin 
+   REAL(DP), EXTERNAL :: hubbard_occ
    COMPLEX(DP) :: esin, n, m, ns(4)  
    !
    INTEGER :: ldim, na, nt, is, m1, m2, majs, isym, mins
@@ -163,12 +148,9 @@ SUBROUTINE init_ns_nc
    DO na = 1, nat
       nt = ityp (na)
       IF (Hubbard_U(nt) /= 0.d0) THEN
-         !     
          ldim = 2*Hubbard_l(nt) + 1
+         totoc = hubbard_occ( upf(nt)%psd )
          nm=.TRUE.
-         !
-         totoc = hubbard_occ(nt,1)
-         !
          IF (starting_magnetization(nt) > 0.d0) THEN  
             nm = .FALSE.
             majs = 1  

@@ -252,7 +252,10 @@ CONTAINS
       ng_2d = imill_2d(n1, n2)
       n3 = mill(3, ng) + 1
       IF (n3 < 1) n3 = n3 + dfftp%nr3
-      aux(ng) = vg3(n3,ng_2d)
+      aux(dfftp%nl(ng)) = aux(dfftp%nl(ng)) + vg3(n3, ng_2d)
+      IF (gamma_only) THEN
+        aux(dfftp%nlm(ng)) = CONJG(aux(dfftp%nl(ng)))
+      ENDIF
     ENDDO
 
     DEALLOCATE (rhog3, vg3)
@@ -476,7 +479,10 @@ CONTAINS
       ng_2d = imill_2d(n1, n2)
       n3 = mill(3, ng) + 1
       IF (n3 < 1) n3 = n3 + dfftp%nr3
-      aux(ng) = vg3(n3,ng_2d)
+      aux(dfftp%nl(ng)) = aux(dfftp%nl(ng)) + vg3(n3, ng_2d)
+      IF (gamma_only) THEN
+        aux(dfftp%nlm(ng)) = CONJG(aux(dfftp%nl(ng)))
+      ENDIF
     ENDDO
 
     DEALLOCATE (rhog3, vg3)
@@ -690,7 +696,10 @@ CONTAINS
       ng_2d = imill_2d(n1, n2)
       n3 = mill(3, ng) + 1
       IF (n3 < 1) n3 = n3 + dfftp%nr3
-      aux(ng) = vg3(n3,ng_2d)
+      aux(dfftp%nl(ng)) = aux(dfftp%nl(ng)) + vg3(n3, ng_2d)
+      IF (gamma_only) THEN
+        aux(dfftp%nlm(ng)) = CONJG(aux(dfftp%nl(ng)))
+      ENDIF
     ENDDO
 
     DEALLOCATE (rhog3, vg3)
@@ -988,7 +997,10 @@ CONTAINS
       ng_2d = imill_2d(n1, n2)
       n3 = mill(3, ng) + 1
       IF (n3 < 1) n3 = n3 + dfftp%nr3
-      aux(ng) = vg3(n3,ng_2d)
+      aux(dfftp%nl(ng)) = aux(dfftp%nl(ng)) + vg3(n3, ng_2d)
+      IF (gamma_only) THEN
+        aux(dfftp%nlm(ng)) = CONJG(aux(dfftp%nl(ng)))
+      ENDIF
     ENDDO
 
     DEALLOCATE (rhog3, vg3)

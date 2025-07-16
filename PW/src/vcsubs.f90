@@ -147,6 +147,7 @@ SUBROUTINE vcinit( mxdtyp, mxdatm, ntype, natot, rat, ityp, avec, vcell, force, 
   REAL(DP), PARAMETER :: zero=0.0d0, um=1.0d0, dois=2.0d0, tres=3.0d0, &
                          quatro=4.0d0, seis=6.0d0
   !
+  IF ( COUNT( iforceh == 2 ) > 0 ) scaloff=0.5d0
   !
   ! calculate the metric for the current step
   !
@@ -280,7 +281,7 @@ SUBROUTINE vcinit( mxdtyp, mxdatm, ntype, natot, rat, ityp, avec, vcell, force, 
      do j = 1, 3
         do i = 1, 3
            do k = 1, 3
-              avec2d (i, j) = iforceh(i,j)*(avec2d (i, j) + pim (i, k) * sigma (k, j))
+              avec2d (i, j) = avec2d (i, j) + pim (i, k) * sigma (k, j)
            enddo
            avec2d (i, j) = avec2d (i, j) / cmass
         enddo
@@ -294,33 +295,31 @@ SUBROUTINE vcinit( mxdtyp, mxdatm, ntype, natot, rat, ityp, avec, vcell, force, 
      !
      ! strain/stress symmetrization
      !
-     if(count(iforceh == 1) == 9)then
-        do i = 1, 3
-           do j = 1, 3
-              d2 (i, j) = zero
-              do k = 1, 3
-                 d2 (i, j) = d2 (i, j) + avec2d (i, k) * sig0 (j, k)
-              enddo
-              d2 (i, j) = d2 (i, j) / v0
+     do i = 1, 3
+        do j = 1, 3
+           d2 (i, j) = zero
+           do k = 1, 3
+              d2 (i, j) = d2 (i, j) + avec2d (i, k) * sig0 (j, k)
            enddo
+           d2 (i, j) = d2 (i, j) / v0
         enddo
-        !
-        d2 (1, 2) = (d2 (1, 2) + d2 (2, 1) ) / dois
-        d2 (1, 3) = (d2 (1, 3) + d2 (3, 1) ) / dois
-        d2 (2, 3) = (d2 (2, 3) + d2 (3, 2) ) / dois
-        d2 (2, 1) = d2 (1, 2)
-        d2 (3, 1) = d2 (1, 3)
-        d2 (3, 2) = d2 (2, 3)
+     enddo
      !
-        do i = 1, 3
-           do j = 1, 3
-              avec2d (i, j) = zero
-              do k = 1, 3
-                 avec2d (i, j) = avec2d (i, j) + d2 (i, k) * avec0 (k, j)
-              enddo
+     d2 (1, 2) = (d2 (1, 2) + d2 (2, 1) ) / dois
+     d2 (1, 3) = (d2 (1, 3) + d2 (3, 1) ) / dois
+     d2 (2, 3) = (d2 (2, 3) + d2 (3, 2) ) / dois
+     d2 (2, 1) = d2 (1, 2)
+     d2 (3, 1) = d2 (1, 3)
+     d2 (3, 2) = d2 (2, 3)
+     !
+     do i = 1, 3
+        do j = 1, 3
+           avec2d (i, j) = zero
+           do k = 1, 3
+              avec2d (i, j) = avec2d (i, j) + d2 (i, k) * avec0 (k, j)
            enddo
         enddo
-     endif
+     enddo
   else
      do i = 1, 3
         do j = 1, 3
@@ -427,9 +426,9 @@ SUBROUTINE vcinit( mxdtyp, mxdatm, ntype, natot, rat, ityp, avec, vcell, force, 
      do j = 1, 3
         do i = 1, 3
            aveci (i, j) = avec (i, j)
-           avec (i, j) = avec (i, j) + iforceh(i,j)*(dt * avecd (i, j) + (dt * dt * &
-                (quatro * avec2d (i, j) - avec2di (i, j) ) / seis))
-           avec2di (i, j) = avec2d (i, j)*iforceh(i,j)
+           avec (i, j) = avec (i, j) + dt * avecd (i, j) + (dt * dt * &
+                (quatro * avec2d (i, j) - avec2di (i, j) ) / seis)  * dble(iforceh(i,j))*scaloff
+           avec2di (i, j) = avec2d (i, j)
         enddo
      enddo
      !
@@ -450,8 +449,7 @@ SUBROUTINE vcmove( mxdtyp, mxdatm, ntype, ityp, rat, avec, vcell, force, if_pos,
                    aveci, avec2di, sigma, sig0, avec0, v0, ratd, rat2d, rati, rat2di,   &
                    enew, uta, eka, eta, ekla, utl, etl, ut, ekint, etot, temp, tolp,    &
                    ntcheck, ntimes, nst, tnew, nzero, natot, acu, ack, acp, acpv, avu,  &
-                   avk, avp, avpv, iforceh, tnosep, vnhp, ekin2nhp, atm2nhp, nhpdim,    &
-                   nhpcl, tnoseh, vnhh, temphh )
+                   avk, avp, avpv, iforceh )
   !------------------------------------------------------------------------------------------
   !! Perform one step of variable-cell shape molecular dynamics.
   !
@@ -474,7 +472,6 @@ SUBROUTINE vcmove( mxdtyp, mxdatm, ntype, ityp, rat, avec, vcell, force, if_pos,
   USE kinds,         ONLY : DP
   USE constants,     ONLY : pi, eps16, k_boltzmann_ry
   USE io_global,     ONLY : stdout
-  USE dynamics_module, ONLY: HaddT_to_RyddT, Ha_to_Ry 
   !
   IMPLICIT NONE
   !
@@ -571,12 +568,6 @@ SUBROUTINE vcmove( mxdtyp, mxdatm, ntype, ityp, rat, avec, vcell, force, if_pos,
   REAL(DP) :: etl, utl, uta, eka, ekla, eta
   REAL(DP) :: avpv, tnew, tolp, avk, avu, avp, &
               ack, acu, acpv, acp
-  LOGICAL :: tnosep, tnoseh 
-  !! if true the terms for for the interaction with the Nose thermostats are added
-  INTEGER, INTENT(IN)  :: atm2nhp(natot), nhpdim, nhpcl
-  REAL(DP), INTENT(IN)   :: vnhp(nhpcl, nhpdim), vnhh(3,3)
-  REAL(DP), INTENT(OUT)  :: ekin2nhp(nhpdim)
-  REAL(DP), INTENT(OUT)  :: temphh(3,3)
   !
   ! ... local variables
   !
@@ -592,10 +583,12 @@ SUBROUTINE vcmove( mxdtyp, mxdatm, ntype, ityp, rat, avec, vcell, force, if_pos,
   !
   LOGICAL :: symmetrize_stress
   REAL(DP) :: d2(3,3)
+  REAL(DP) :: scaloff=1.0d0
   !
   REAL(DP), PARAMETER :: zero=0.0d0,   um=1.0d0,  dois=2.0d0, tres=3.0d0, &
                          quatro=4.0d0, seis=6.0d0
   !
+  IF ( COUNT( iforceh == 2 ) > 0 ) scaloff=0.5d0
   !
   !
   !      zero energy components
@@ -618,26 +611,13 @@ SUBROUTINE vcmove( mxdtyp, mxdatm, ntype, ityp, rat, avec, vcell, force, if_pos,
   !
   ! calculate (uncorrected) rat2d
   !
-  !
-  
-  ! 
   
   do na = 1, natot
-    nt = ityp (na)
-    do i = 1, 3
-      rat2d (i, na) = if_pos(i,na) * force (i, na) / atmass (nt)
-    enddo
-  enddo
-  if (tnosep) then 
-    do na = 1, natot
      nt = ityp (na)
      do i = 1, 3
-       rat2d (i, na) = if_pos(i,na) * (rat2d(i, na) - HaddT_to_RyddT * vnhp(1, atm2nhp(na)) * ratd(i, na)) 
+        rat2d (i, na) = if_pos(i,na) * force (i, na) / atmass (nt)
      enddo
-    enddo
-  end if 
-  
-  
+  enddo
   !
   ! if variable cell, estimate velocities and set the number of update to
   ! be performed in order to have them accurate. This is needed only for
@@ -652,7 +632,7 @@ SUBROUTINE vcmove( mxdtyp, mxdatm, ntype, ityp, rat, avec, vcell, force, if_pos,
      enddo
      do j = 1, 3
         do i = 1, 3
-           avecd (i, j) = avecd (i, j) + dt * avec2di (i, j) * dble(iforceh(i,j))
+           avecd (i, j) = avecd (i, j) + dt * avec2di (i, j) !* dble(iforceh(i,j))
         enddo
      enddo
      n_update = 19
@@ -729,7 +709,6 @@ SUBROUTINE vcmove( mxdtyp, mxdatm, ntype, ityp, rat, avec, vcell, force, if_pos,
                  avec2d (i, j) = avec2d (i, j) + pim (i, k) * sigma (k, j)
               enddo
               avec2d (i, j) = avec2d (i, j) / cmass
-              if (tnoseh) avec2d(i,j) = avec2d(i,j) - HaddT_to_RyddT * vnhh(i,j) * avecd(i,j)
            enddo
         enddo
         !
@@ -739,11 +718,8 @@ SUBROUTINE vcmove( mxdtyp, mxdatm, ntype, ityp, rat, avec, vcell, force, if_pos,
         !
         !      strain/stress symmetrization
         !
-        if(count(iforceh == 1) == 9)then
-           symmetrize_stress = .true.
-        else
-           symmetrize_stress = .false.
-        endif
+        symmetrize_stress = .true.
+
         if (.not.symmetrize_stress) goto 666
         do i = 1, 3
            do j = 1, 3
@@ -766,7 +742,7 @@ SUBROUTINE vcmove( mxdtyp, mxdatm, ntype, ityp, rat, avec, vcell, force, if_pos,
            do j = 1, 3
               avec2d (i, j) = zero
               do k = 1, 3
-                 avec2d (i, j) = iforceh(i,j)*(avec2d (i, j) + d2 (i, k) * avec0 (k, j))
+                 avec2d (i, j) = avec2d (i, j) + d2 (i, k) * avec0 (k, j)
               enddo
            enddo
 
@@ -778,8 +754,8 @@ SUBROUTINE vcmove( mxdtyp, mxdatm, ntype, ityp, rat, avec, vcell, force, if_pos,
         !
         do j = 1, 3
            do i = 1, 3
-              avecd (i, j) = ((avec (i, j) - aveci (i, j) ) / dt + (dt * &
-                   (dois * avec2d (i, j) + avec2di (i, j) ) / seis))  * dble(iforceh(i,j))
+              avecd (i, j) = (avec (i, j) - aveci (i, j) ) / dt + (dt * &
+                   (dois * avec2d (i, j) + avec2di (i, j) ) / seis)  * dble(iforceh(i,j))*scaloff
            enddo
 
         enddo
@@ -826,7 +802,6 @@ SUBROUTINE vcmove( mxdtyp, mxdatm, ntype, ityp, rat, avec, vcell, force, if_pos,
   !
   !     compute atomic energies
   !
-  if (tnosep) ekin2nhp = zero 
   do na = 1, natot
      nt = ityp (na)
      do i = 1, 3
@@ -835,9 +810,6 @@ SUBROUTINE vcmove( mxdtyp, mxdatm, ntype, ityp, rat, avec, vcell, force, if_pos,
            ekk = ekk + ratd (i, na) * g (i, j) * ratd (j, na)
         enddo
         eka = eka + ekk * atmass (nt) / dois
-        ! ekin2nhp will be  passed to ion_nose routines that expects Hartree 
-        if (tnosep) ekin2nhp(atm2nhp(na)) = ekin2nhp(atm2nhp(na)) + &
-                                            ekk * atmass(nt) / dois / Ha_to_Ry
      enddo
   enddo
   !
@@ -870,18 +842,14 @@ SUBROUTINE vcmove( mxdtyp, mxdatm, ntype, ityp, rat, avec, vcell, force, if_pos,
         enddo
      endif
      !
-
      if (calc (1:1) .eq.'c') then
-        ! temphh will be passed to cell_nose routines, converted in Kelvin few lines below.  
-        temphh = zero
         !
         ! cell dynamics or cell minimization cases
         !
         do k = 1, 3
            tr = zero
            do m = 1, 3
-              temphh(m,k) = avecd(m,k) * avecd(m,k)
-              tr = tr + temphh(m,k) 
+              tr = tr + avecd (m, k) * avecd (m, k)
            enddo
            ekla = ekla + tr
         enddo
@@ -889,7 +857,6 @@ SUBROUTINE vcmove( mxdtyp, mxdatm, ntype, ityp, rat, avec, vcell, force, if_pos,
   endif
   !
   ekla = ekla * cmass / dois
-  temphh = cmass * temphh/K_BOLTZMANN_RY 
   utl = + press * vcell
   etl = utl + ekla
   !
@@ -927,7 +894,7 @@ SUBROUTINE vcmove( mxdtyp, mxdatm, ntype, ityp, rat, avec, vcell, force, if_pos,
   !
   !       rescale velocities
   !
-  if ( mod (nst, ntcheck) == 0 .and. .not. tnosep) then
+  if ( mod (nst, ntcheck) == 0 ) then
      !
      !       with the new definition of tolp, this is the test to perform
      !
@@ -946,7 +913,7 @@ SUBROUTINE vcmove( mxdtyp, mxdatm, ntype, ityp, rat, avec, vcell, force, if_pos,
         if (calc (2:2) .eq.'d') then
            do k = 1, 3
               do l = 1, 3
-                 avecd (l, k) = iforceh(l,k)*(alpha * avecd (l, k))
+                 avecd (l, k) = alpha * avecd (l, k)  !* dble(iforceh(i,j))
               enddo
            enddo
         endif
@@ -1007,13 +974,11 @@ SUBROUTINE vcmove( mxdtyp, mxdatm, ntype, ityp, rat, avec, vcell, force, if_pos,
            do l = 1, 3
               xx = avec2d (l, k) * avec2di (l, k)
               if (xx.lt.zero) then
-                 if(iforceh(l,k) == 1)then
-                    avecd (l, k) = zero
-                    avec(l, k)=avec2d(l,k)*aveci(l,k)-avec2di(l,k)*avec(l,k)
-                    avec(l, k)=avec(l,k)/(avec2d(l,k)-avec2di(l,k))
-                    avec2d(l,k)=zero
-                    avec2di(l,k)=zero
-                 endif
+                 avecd (l, k) = zero
+                 avec(l, k)=avec2d(l,k)*aveci(l,k)-avec2di(l,k)*avec(l,k)
+                 avec(l, k)=avec(l,k)/(avec2d(l,k)-avec2di(l,k))
+                 avec2d(l,k)=zero
+                 avec2di(l,k)=zero
               endif
            enddo
         enddo
@@ -1038,8 +1003,8 @@ SUBROUTINE vcmove( mxdtyp, mxdatm, ntype, ityp, rat, avec, vcell, force, if_pos,
      do j = 1, 3
         do i = 1, 3
            aveci (i, j) = avec (i, j)
-           avec (i, j) = avec (i, j) + (dt * avecd (i, j) + (dt * dt * &
-                (quatro * avec2d (i, j) - avec2di (i, j) ) / seis))  * dble(iforceh(i,j))
+           avec (i, j) = avec (i, j) + dt * avecd (i, j) + (dt * dt * &
+                (quatro * avec2d (i, j) - avec2di (i, j) ) / seis)  * dble(iforceh(i,j))*scaloff
            avec2di (i, j) = avec2d (i, j)
         enddo
      enddo

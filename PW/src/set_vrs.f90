@@ -1,5 +1,5 @@
 !
-! Copyright (C) 2001-2024 Quantum ESPESSO Foundation
+! Copyright (C) 2001 PWSCF group
 ! This file is distributed under the terms of the
 ! GNU General Public License. See the file `License'
 ! in the root directory of the present distribution,
@@ -13,9 +13,7 @@ SUBROUTINE set_vrs( vrs, vltot, vr, kedtau, kedtaur, nrxx, nspin, doublegrid )
   !! the sum of all the local pseudopotential contributions.
   !
   USE kinds
-  USE xc_lib,          ONLY : xclib_dft_is
-  USE fft_base,        ONLY : dffts, dfftp
-  USE fft_interfaces,  ONLY : fft_interpolate
+  USE fft_base, ONLY : dffts 
   !
   IMPLICIT NONE
   !
@@ -35,9 +33,48 @@ SUBROUTINE set_vrs( vrs, vltot, vr, kedtau, kedtaur, nrxx, nspin, doublegrid )
   !! the kinetic energy density in R-space
   LOGICAL :: doublegrid
   ! input: true if a doublegrid is used
-  INTEGER :: is
   !
-  !$acc data present(vrs)
+  CALL sum_vrs( nrxx, nspin, vltot, vr, vrs )
+  !
+  CALL interpolate_vrs( nrxx, nspin, doublegrid, kedtau, kedtaur, vrs )
+  ! 
+
+  RETURN
+  !
+END SUBROUTINE set_vrs
+!
+!
+!--------------------------------------------------------------------
+SUBROUTINE sum_vrs( nrxx, nspin, vltot, vr, vrs )
+  !--------------------------------------------------------------------
+  !! Accumulates local potential contributions into vrs (the total local potential).
+  !
+  USE kinds
+  USE io_global, ONLY : stdout, ionode !SJ
+  USE mp_world,  ONLY : mpime !SJ
+   
+  !
+  IMPLICIT NONE
+  !
+  INTEGER :: nspin
+  !! input: number of spin components: 1 if lda, 2 if lsd, 4 if noncolinear
+  INTEGER :: nrxx
+  !! input: the fft grid dimension
+  REAL(DP) :: vrs(nrxx,nspin)
+  !! output: total local potential on the smooth grid:  
+  !! \(\text{vrs\}=\text{vltot}+\text{vr}\)
+  REAL(DP) :: vltot(nrxx)
+  !! input: the total local pseudopotential
+  REAL(DP) :: vr(nrxx,nspin)
+  !! input: the scf(H+xc) part of the local potential
+  !
+  ! ... local variable
+  !
+  INTEGER :: is,ii,iunvrs
+  CHARACTER(LEN=320)    :: filename
+  CHARACTER(LEN=6), EXTERNAL :: int_to_char !SJ
+  !
+  !
   DO is = 1, nspin
      !
      ! define the total local potential (external + scf) for each spin ...
@@ -53,6 +90,53 @@ SUBROUTINE set_vrs( vrs, vltot, vr, kedtau, kedtaur, nrxx, nspin, doublegrid )
      !
   ENDDO
   !
+  !SJ
+  !IF (ionode) THEN
+          !WRITE(stdout,*) 'writing '
+   !       iunvrs=9999+mpime
+   !       filename='vrs'//TRIM(int_to_char(iunvrs))//'.txt'
+   !       OPEN(unit = iunvrs,file=filename,status='unknown')
+   ! DO ii=1,nrxx
+   !       WRITE(iunvrs,*) 'vrsup(',ii,')',vrs(ii,1)
+   !       WRITE(iunvrs,*) 'vrsdw(',ii,')',vrs(ii,2)
+   !  ENDDO
+   !       CLOSE(iunvrs)
+  !ENDIF
+
+  RETURN
+  !SJ
+  !
+END SUBROUTINE sum_vrs
+!
+!--------------------------------------------------------------------------
+SUBROUTINE interpolate_vrs( nrxx, nspin, doublegrid, kedtau, kedtaur, vrs )
+  !--------------------------------------------------------------------------
+  !! Interpolates local potential on the smooth mesh if necessary.
+  !
+  USE kinds
+  USE xc_lib,          ONLY : xclib_dft_is
+  USE fft_base,        ONLY : dffts, dfftp
+  USE fft_interfaces,  ONLY : fft_interpolate
+  !
+  IMPLICIT NONE
+  !
+  INTEGER :: nspin
+  !! input: number of spin components: 1 if lda, 2 if lsd, 4 if noncolinear
+  INTEGER :: nrxx
+  !! input: the fft grid dimension
+  REAL(DP) :: vrs(nrxx,nspin)
+  !! output: total local potential interpolated on the smooth grid
+  REAL(DP) :: kedtau(dffts%nnr,nspin)
+  !! position dependent kinetic energy enhancement factor
+  REAL(DP) :: kedtaur(nrxx,nspin)
+  !! the kinetic energy density in R-space
+  LOGICAL :: doublegrid
+  !! input: true if a doublegrid is used
+  !
+  ! ... local variable
+  !
+  INTEGER :: is
+  !
   ! ... interpolate it on the smooth mesh if necessary
   !
   DO is = 1, nspin
@@ -60,10 +144,6 @@ SUBROUTINE set_vrs( vrs, vltot, vr, kedtau, kedtaur, nrxx, nspin, doublegrid )
      IF (xclib_dft_is('meta')) CALL fft_interpolate( dfftp, kedtaur(:,is), dffts, kedtau(:,is) )
   ENDDO
   !
-  !$acc update device(vrs)
-  !
-  !$acc end data
-  ! 
   RETURN
   !
-END SUBROUTINE set_vrs
+END SUBROUTINE interpolate_vrs

@@ -1,5 +1,5 @@
 !
-! Copyright (C) 2002-2022 Quantum ESPRESSO group
+! Copyright (C) 2002-2016 Quantum ESPRESSO group
 ! This file is distributed under the terms of the
 ! GNU General Public License. See the file `License'
 ! in the root directory of the present distribution,
@@ -87,14 +87,14 @@ SUBROUTINE h_psi_( lda, n, m, psi, hpsi )
   !
   USE kinds,                   ONLY: DP
   USE bp,                      ONLY: lelfield, l3dstring, gdir, efield, efield_cry
-  USE becmod,                  ONLY: becp, calbec
+  USE becmod,                  ONLY: bec_type, becp, calbec
   USE lsda_mod,                ONLY: current_spin
   USE scf,                     ONLY: vrs  
   USE wvfct,                   ONLY: g2kin
   USE uspp,                    ONLY: vkb, nkb
-  USE ldaU,                    ONLY: lda_plus_u, Hubbard_projectors
+  USE ldaU,                    ONLY: lda_plus_u, U_projection
   USE gvect,                   ONLY: gstart
-  USE control_flags,           ONLY: gamma_only, scissor
+  USE control_flags,           ONLY: gamma_only
   USE noncollin_module,        ONLY: npol, noncolin
   USE realus,                  ONLY: real_space, invfft_orbital_gamma, fwfft_orbital_gamma, &
                                      calbec_rs_gamma, add_vuspsir_gamma, invfft_orbital_k,  &
@@ -103,14 +103,11 @@ SUBROUTINE h_psi_( lda, n, m, psi, hpsi )
   USE fft_base,                ONLY: dffts
   USE exx,                     ONLY: use_ace, vexx, vexxace_gamma, vexxace_k
   USE xc_lib,                  ONLY: exx_is_active, xclib_dft_is
-  USE sci_mod,                 ONLY: p_psi
   USE fft_helper_subroutines
   !
-#if defined(__OSCDFT)
-  USE plugin_flags,            ONLY : use_oscdft
-  USE oscdft_base,             ONLY : oscdft_ctx
-  USE oscdft_functions,        ONLY : oscdft_h_psi
-#endif
+  USE wvfct_gpum,              ONLY: using_g2kin
+  USE scf_gpum,                ONLY: using_vrs
+  USE becmod_subs_gpum,        ONLY: using_becp_auto
   !
   IMPLICIT NONE
   !
@@ -132,6 +129,11 @@ SUBROUTINE h_psi_( lda, n, m, psi, hpsi )
   !
   !
   CALL start_clock( 'h_psi' ); !write (*,*) 'start h_psi';FLUSH(6)
+
+  CALL using_g2kin(0)
+  CALL using_vrs(0)   ! vloc_psi_gamma (intent:in)
+
+
   !
   ! ... Here we set the kinetic energy (k+G)^2 psi and clean up garbage
   !
@@ -153,10 +155,14 @@ SUBROUTINE h_psi_( lda, n, m, psi, hpsi )
   IF ( gamma_only ) THEN
      ! 
      IF ( real_space .AND. nkb > 0  ) THEN
+        CALL using_becp_auto(1)
         !
         ! ... real-space algorithm
         ! ... fixme: real_space without beta functions does not make sense
         !
+        IF ( dffts%has_task_groups ) &
+             CALL errore( 'h_psi', 'task_groups not implemented with real_space', 1 )
+
         DO ibnd = 1, m, 2
            ! ... transform psi to real space -> psic 
            CALL invfft_orbital_gamma( psi, ibnd, m )
@@ -172,22 +178,15 @@ SUBROUTINE h_psi_( lda, n, m, psi, hpsi )
            CALL fwfft_orbital_gamma( hpsi, ibnd, m, add_to_orbital=.TRUE. )
         ENDDO
         !
-     ELSE IF ( dffts%has_task_groups ) THEN
-        ! ... usual reciprocal-space algorithm, with task groups
-        CALL vloc_psi_tg_gamma( lda, n, m, psi, vrs(1,current_spin), hpsi ) 
      ELSE
         ! ... usual reciprocal-space algorithm
-        CALL vloc_psi_gamma_acc( lda, n, m, psi, vrs(1,current_spin), hpsi ) 
+        CALL vloc_psi_gamma( lda, n, m, psi, vrs(1,current_spin), hpsi ) 
         !
      ENDIF 
      !
   ELSEIF ( noncolin ) THEN 
      !
-     IF ( dffts%has_task_groups ) THEN
-        CALL vloc_psi_tg_nc( lda, n, m, psi, vrs, hpsi )
-     ELSE
-        CALL vloc_psi_nc_acc( lda, n, m, psi, vrs, hpsi )
-     END IF
+     CALL vloc_psi_nc( lda, n, m, psi, vrs, hpsi )
      !
   ELSE  
      ! 
@@ -195,6 +194,11 @@ SUBROUTINE h_psi_( lda, n, m, psi, hpsi )
         !
         ! ... real-space algorithm
         ! ... fixme: real_space without beta functions does not make sense
+        !
+        CALL using_becp_auto(1)  ! WHY IS THIS HERE?
+
+        IF ( dffts%has_task_groups ) &
+             CALL errore( 'h_psi', 'task_groups not implemented with real_space', 1 )
         !
         DO ibnd = 1, m
            ! ... transform psi to real space -> psic 
@@ -212,12 +216,9 @@ SUBROUTINE h_psi_( lda, n, m, psi, hpsi )
            !
         ENDDO
         !
-     ELSE IF ( dffts%has_task_groups ) THEN
-        ! ... usual reciprocal-space algorithm, with task groups
-        CALL vloc_psi_tg_k( lda, n, m, psi, vrs(1,current_spin), hpsi ) 
      ELSE
-        ! ... usual reciprocal-space algorithm
-        CALL vloc_psi_k_acc( lda, n, m, psi, vrs(1,current_spin), hpsi ) 
+        !
+        CALL vloc_psi_k( lda, n, m, psi, vrs(1,current_spin), hpsi )
         !
      ENDIF
      !
@@ -227,6 +228,8 @@ SUBROUTINE h_psi_( lda, n, m, psi, hpsi )
   ! ... (not in the real-space case: it is done together with V_loc)
   !
   IF ( nkb > 0 .AND. .NOT. real_space) THEN
+     !
+     CALL using_becp_auto(1)
      !
      CALL start_clock( 'h_psi:calbec' )
      CALL calbec( n, vkb, psi, becp, m )
@@ -241,7 +244,7 @@ SUBROUTINE h_psi_( lda, n, m, psi, hpsi )
   !
   ! ... Here we add the Hubbard potential times psi
   !
-  IF ( lda_plus_u .AND. Hubbard_projectors.NE."pseudo" ) THEN
+  IF ( lda_plus_u .AND. U_projection.NE."pseudo" ) THEN
      !
      IF ( noncolin ) THEN
         CALL vhpsi_nc( lda, n, m, psi, hpsi )
@@ -250,10 +253,6 @@ SUBROUTINE h_psi_( lda, n, m, psi, hpsi )
      ENDIF
      !
   ENDIF
-  !
-  ! ... apply scissor operator
-  !
-  IF (scissor) call p_psi(lda,n,m,psi,hpsi) 
   !
   ! ... Here the exact-exchange term Vxx psi
   !
@@ -265,6 +264,7 @@ SUBROUTINE h_psi_( lda, n, m, psi, hpsi )
            CALL vexxace_k( lda, m, psi, ee, hpsi )
         ENDIF
      ELSE
+        CALL using_becp_auto(0)
         CALL vexx( lda, n, m, psi, hpsi, becp )
      ENDIF
   ENDIF
@@ -282,11 +282,6 @@ SUBROUTINE h_psi_( lda, n, m, psi, hpsi )
      ENDIF
      !
   ENDIF
-#if defined(__OSCDFT)
-  IF ( use_oscdft .AND. (oscdft_ctx%inp%oscdft_type==1)) THEN
-     CALL oscdft_h_psi(oscdft_ctx, lda, n, m, psi, hpsi)
-  END IF
-#endif
   !
   ! ... With Gamma-only trick, Im(H*psi)(G=0) = 0 by definition,
   ! ... but it is convenient to explicitly set it to 0 to prevent trouble

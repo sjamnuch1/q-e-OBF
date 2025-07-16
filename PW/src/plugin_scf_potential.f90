@@ -19,6 +19,8 @@ USE lsda_mod,         ONLY : nspin
 USE scf,              ONLY : scf_type
 USE plugin_flags
 !
+! ***Environ MODULES BEGIN***
+! ***Environ MODULES END***
 !
 IMPLICIT NONE
 !
@@ -27,5 +29,10 @@ LOGICAL, INTENT(IN) :: conv_elec
 REAL(DP), INTENT(IN) :: dr2
 REAL(DP), INTENT(INOUT) :: vltot(dfftp%nnr)
 !
+! ***Environ VARIABLES BEGIN***
+! ***Environ VARIABLES END***
+!
+! ***Environ CALLS BEGIN***
+! ***Environ CALLS END***
 !
 END SUBROUTINE plugin_scf_potential

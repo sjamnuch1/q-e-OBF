@@ -1,0 +1,11 @@
+&inputobf
+prefix='system'
+outdir='./Out'
+num_nbndv=4
+num_val=4
+num_cond=21
+s_bands=1e-9
+gsthres=0.000
+calc_mode=1
+trace_mode=0
+/

@@ -1,0 +1,3 @@
+Sample calculation for using obf software.
+Here we do scf and nscf calculation for LiF at 8 gamma.
+Generate the OBF and interpolate to 10x10x10 k-point mesh.

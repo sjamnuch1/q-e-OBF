@@ -1,0 +1,11 @@
+&inputham
+prefix='system'
+outdir='./Out_obf'
+num_nbndv=4
+num_val=4
+num_cond=21
+kpoint_filename='KPOINTS'
+kpoint_wrap=.false.
+kpoint_style='automatic'
+hamilk_byfile =.true.
+/

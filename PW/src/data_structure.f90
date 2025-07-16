@@ -65,11 +65,14 @@ SUBROUTINE data_structure( gamma_only )
   !
   ! ... find maximum value among all the processors
   !
+  WRITE(stdout,*) 'gcutw',gcutw
   CALL mp_max( gkcut, inter_pool_comm )
   !
   ! ... set up fft descriptors, including parallel stuff: sticks, planes, etc.
   !
   ! task group are disabled if real_space calculation of calbec is used
+  WRITE(stdout,*) 'gkcut,gcutm,gcutms,gcutw'
+  WRITE(stdout,*) gkcut,gcutm,gcutms,gcutw
   dffts%has_task_groups = (ntask_groups >1) .AND. .NOT. real_space
   CALL fft_type_init( dffts, smap, "wave", gamma_only, lpara, intra_bgrp_comm, &
        at, bg, gkcut, gcutms/gkcut, fft_fact=fft_fact, nyfft=nyfft, nmany=nmany_, use_pd=pencil_decomposition_  )
@@ -84,6 +87,7 @@ SUBROUTINE data_structure( gamma_only )
   CALL fft_base_info( ionode, stdout )
   ngs_ = dffts%ngl( dffts%mype + 1 )
   ngm_ = dfftp%ngl( dfftp%mype + 1 )
+  WRITE(stdout,*) 'ngm_',ngm_
   !
   IF( gamma_only ) THEN
      ngs_ = (ngs_ + 1)/2

@@ -1,5 +1,5 @@
 !
-! Copyright (C) 2001-2023 Quantum ESPRESSO group
+! Copyright (C) 2001-2007 Quantum ESPRESSO group
 ! This file is distributed under the terms of the
 ! GNU General Public License. See the file `License'
 ! in the root directory of the present distribution,
@@ -23,18 +23,14 @@ SUBROUTINE atomic_rho_g( rhocg, nspina )
   !
   USE kinds,                ONLY : DP
   USE constants,            ONLY : eps8
+  USE atom,                 ONLY : rgrid, msh
   USE ions_base,            ONLY : ntyp => nsp
-  USE cell_base,            ONLY : tpiba2, omega
-  USE gvect,                ONLY : ngm, ngl, gl, igtongl, ecutrho
+  USE cell_base,            ONLY : tpiba, omega
+  USE gvect,                ONLY : ngm, ngl, gstart, gl, igtongl
   USE lsda_mod,             ONLY : starting_magnetization
-  USE starting_scf,         ONLY : starting_charge
-  USE vlocal,               ONLY : strf
+  USE vlocal,               ONLY : starting_charge, strf
   USE noncollin_module,     ONLY : angle1, angle2
   USE uspp_param,           ONLY : upf
-  USE mp_bands,             ONLY : intra_bgrp_comm
-  USE mp,                   ONLY : mp_max
-  USE cellmd,               ONLY : cell_factor
-  USE rhoat_mod,            ONLY : init_tab_rhoat, interp_rhoat
   !
   IMPLICIT NONE
   !
@@ -48,34 +44,53 @@ SUBROUTINE atomic_rho_g( rhocg, nspina )
   !
   ! ... local variables
   !
-  REAL(DP) :: rhoscale, fac
-  REAL(DP), ALLOCATABLE :: rhoatg(:)
+  REAL(DP) :: rhoneg, rhoima, rhoscale, gx
+  REAL(DP), ALLOCATABLE :: rhocgnt(:), aux(:)
   REAL(DP) :: angular(nspina)
-  REAL(DP) :: qmax
-  INTEGER :: ir, is, ig, igl, nt, ierr
+  INTEGER :: ir, is, ig, igl, nt, ndm
   !
-  qmax = tpiba2 * MAXVAL ( gl )
-  CALL mp_max (qmax, intra_bgrp_comm)
-  !! this is the actual maximum |G|^2 needed in the interpolation table
-  !! for variable-cell calculations. It may exceed ecutrho, so we use
-  !! "cell_factor" (1.2 or so) as below, in order to avoid too frequent
-  !! re-allocations of the interpolation table
+  ! allocate work space 
   !
-  qmax = MAX (sqrt(qmax), sqrt(ecutrho)*cell_factor)
-  CALL init_tab_rhoat (qmax, omega, intra_bgrp_comm, ierr)
-  !! Initialize  interpolation tables (if not already done)
+  ndm = MAXVAL ( msh(1:ntyp) )
+  ALLOCATE (rhocgnt( ngl))
   !
-  ALLOCATE (rhoatg( ngl))
-  !$acc data create(rhoatg) copyin( gl, strf ) present ( igtongl )
+!$omp parallel private(aux, gx, rhoscale, angular)
   !
-  !$acc kernels
-  rhocg(:,1:nspina) = (0.0_dp, 0.0_dp)
-  !$acc end kernels
+  call threaded_nowait_memset(rhocg, 0.0_dp, ngm*nspina*2)
+  !
+  ALLOCATE (aux(ndm))
+  !
   DO nt = 1, ntyp
      !
-     ! interpolate atomic rho(G)
+     ! Here we compute the G=0 term
      !
-     CALL interp_rhoat( nt, ngl, gl, tpiba2, rhoatg )
+!$omp master
+     IF (gstart == 2) then
+        DO ir = 1, msh (nt)
+           aux (ir) = upf(nt)%rho_at (ir)
+        ENDDO
+        call simpson (msh (nt), aux, rgrid(nt)%rab, rhocgnt (1) )
+     ENDIF
+!$omp end master
+     !
+     ! Here we compute the G<>0 term
+     !
+!$omp do
+     DO igl = gstart, ngl
+        gx = sqrt (gl (igl) ) * tpiba
+        DO ir = 1, msh (nt)
+           IF (rgrid(nt)%r(ir) < eps8) then
+              aux(ir) = upf(nt)%rho_at(ir)
+           ELSE
+              aux(ir) = upf(nt)%rho_at(ir) * &
+                        sin(gx*rgrid(nt)%r(ir)) / (rgrid(nt)%r(ir)*gx)
+           ENDIF
+        ENDDO
+        CALL simpson (msh (nt), aux, rgrid(nt)%rab, rhocgnt (igl) )
+     ENDDO
+!$omp end do
+     !
+     ! we compute the 3D atomic charge in reciprocal space
      !
      IF (upf(nt)%zp > eps8) THEN
         rhoscale = MAX(0.0_dp, upf(nt)%zp - starting_charge(nt)) / upf(nt)%zp
@@ -83,11 +98,13 @@ SUBROUTINE atomic_rho_g( rhocg, nspina )
         rhoscale = 1.0_dp
      ENDIF
      !
-     !$acc parallel loop
+     !
+!$omp do
      DO ig = 1, ngm
         rhocg(ig,1) = rhocg(ig,1) + &
-                strf(ig,nt) * rhoscale * rhoatg(igtongl(ig))
+                strf(ig,nt) * rhoscale * rhocgnt(igtongl(ig)) / omega
      ENDDO
+!$omp end do nowait
      !
      IF ( nspina >= 2 ) THEN
         !
@@ -99,19 +116,25 @@ SUBROUTINE atomic_rho_g( rhocg, nspina )
         ENDIF
         !
         DO is = 2, nspina
-           fac = starting_magnetization(nt) * angular(is-1) * rhoscale
-           !$acc parallel loop
+!$omp do
            DO ig = 1, ngm
-              rhocg(ig,is) = rhocg(ig,is) + fac * &
-                            strf(ig,nt) * rhoatg(igtongl(ig))
+              rhocg(ig,is) = rhocg(ig,is) + &
+                            starting_magnetization(nt) * angular(is-1) * &
+                            strf(ig,nt) * rhoscale * rhocgnt(igtongl(ig)) / omega
            ENDDO
+!$omp end do nowait
         ENDDO
         !
      ENDIF
-     !
+     ! must complete the computation of rhocg before updating rhocgnt
+     ! for the next type
+!$omp barrier
   ENDDO
-  !$acc end data
-  DEALLOCATE (rhoatg)
+
+  DEALLOCATE (aux)
+!$omp end parallel
+
+  DEALLOCATE (rhocgnt)
 
 END SUBROUTINE atomic_rho_g
 !
@@ -123,7 +146,7 @@ SUBROUTINE atomic_rho( rhoa, nspina )
   !
   USE kinds,                ONLY : DP
   USE io_global,            ONLY : stdout
-  USE cell_base,            ONLY : omega
+  USE cell_base,            ONLY : tpiba, omega
   USE control_flags,        ONLY : gamma_only
   USE lsda_mod,             ONLY : lsda
   USE mp_bands,             ONLY : intra_bgrp_comm

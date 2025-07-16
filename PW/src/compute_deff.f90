@@ -5,17 +5,16 @@
 ! in the root directory of the present distribution,
 ! or http://www.gnu.org/copyleft/gpl.txt .
 !
-!
 !-------------------------------------------------------------------------
 SUBROUTINE compute_deff( deff, et )
   !-----------------------------------------------------------------------
-  !! This routine computes the effective value of the D-eS coefficients
-  !! which appear often in many expressions in the US or PAW case. 
-  !! This routine is for the collinear case.
+  !!  This routine computes the effective value of the D-eS coefficients
+  !!  which appear often in many expressions in the US or PAW case. 
+  !!  This routine is for the collinear case.
   !
   USE kinds,       ONLY: DP
-  USE ions_base,   ONLY: nat
-  USE uspp,        ONLY: okvan, deeq, qq_at
+  USE ions_base,   ONLY: nsp, nat, ityp
+  USE uspp,        ONLY: deeq, qq_at, okvan
   USE uspp_param,  ONLY: nhm
   USE lsda_mod,    ONLY: current_spin
   !
@@ -28,21 +27,24 @@ SUBROUTINE compute_deff( deff, et )
   !
   ! ... local variables
   !
-  INTEGER :: nt, na, is, i, j
+  INTEGER :: nt, na, is
   !
-  !$acc kernels present_or_copyout(deff)
+  deff(:,:,:) = deeq(:,:,:,current_spin)
   !
-  IF (.NOT. okvan) THEN
+  IF (okvan) THEN
      !
-     deff(:,:,:) = deeq(:,:,:,current_spin)
-     !
-  ELSE
-     !
-     deff(:,:,:) = deeq(:,:,:,current_spin) - et*qq_at(:,:,:)
+     DO nt = 1, nsp
+        DO na = 1, nat
+           !
+           IF ( ityp(na) == nt ) THEN
+              deff(:,:,na) = deff(:,:,na) - et*qq_at(:,:,na)
+           ENDIF
+           !
+        ENDDO
+     ENDDO
      !
   ENDIF
   !
-  !$acc end kernels
   !
   RETURN
   !
@@ -50,7 +52,7 @@ END SUBROUTINE compute_deff
 !
 !
 !---------------------------------------------------------------------------
-SUBROUTINE compute_deff_nc( deff_nc, et )
+SUBROUTINE compute_deff_nc( deff, et )
   !-------------------------------------------------------------------------
   !! This routine computes the effective value of the D-eS coefficients
   !! which appears often in many expressions. This routine is for the
@@ -58,8 +60,8 @@ SUBROUTINE compute_deff_nc( deff_nc, et )
   !
   USE kinds,            ONLY: DP
   USE ions_base,        ONLY: nsp, nat, ityp
-  USE noncollin_module, ONLY: noncolin, npol, lspinorb
-  USE uspp,             ONLY: okvan, deeq_nc, qq_so, qq_at
+  USE noncollin_module, ONLY: npol, lspinorb
+  USE uspp,             ONLY: deeq_nc, qq_at, qq_so, okvan
   USE uspp_param,       ONLY: nhm
   USE lsda_mod,         ONLY: nspin
   !
@@ -67,71 +69,42 @@ SUBROUTINE compute_deff_nc( deff_nc, et )
   !
   REAL(DP), INTENT(IN) :: et
   !! The eigenvalues of the hamiltonian
-  COMPLEX(DP), INTENT(OUT) :: deff_nc(nhm,nhm,nat,nspin) 
+  COMPLEX(DP), INTENT(OUT) :: deff(nhm,nhm,nat,nspin) 
   !! Effective values of the D-eS coefficients
   !
   ! ... local variables
   !
-  INTEGER :: nt, na, is, ijs, i, j, ias
-  INTEGER :: nt_v(nat), na_v(nat)
+  INTEGER :: nt, na, is, js, ijs
   !
-  !$acc data present_or_copyout( deff_nc )
-  !
-  !$acc kernels
-  deff_nc(:,:,:,:) = deeq_nc(:,:,:,:)
-  !$acc end kernels
-  !
-  IF (okvan) then
-    !
-    ! ... set up index arrays to fill 'deff' in on gpu
-    i = 0
-    DO nt = 1, nsp
-      DO na = 1, nat
-        IF ( ityp(na)/=nt ) CYCLE
-        i = i + 1
-        nt_v(i) = nt
-        na_v(i) = na
-      ENDDO
-    ENDDO
-    !
-    !$acc data copyin( nt_v, na_v )
-    !
-    IF (lspinorb) THEN
-      !
-      !$acc parallel loop collapse(3)
-      DO ias = 1, nat
-        DO i = 1, nhm
-          DO j = 1, nhm
-            na = na_v(ias)
-            nt = nt_v(ias)
-            deff_nc(i,j,na,:) = deeq_nc(i,j,na,:) - CMPLX(et,KIND=DP)*qq_so(i,j,:,nt)
-          ENDDO
+  deff=deeq_nc
+  IF (okvan) THEN
+     !
+     DO nt = 1, nsp
+        DO na = 1, nat
+           !
+           IF ( ityp(na) == nt ) THEN
+              IF (lspinorb) THEN
+                 deff(:,:,na,:) = deff(:,:,na,:) - et * qq_so(:,:,:,nt)
+              ELSE
+                 ijs=0
+                 !
+                 DO is=1,npol
+                    DO js=1,npol
+                       !
+                       ijs=ijs+1
+                       IF (is==js) deff(:,:,na,ijs)=deff(:,:,na,ijs)-et*qq_at(:,:,na)
+                       !
+                    ENDDO
+                 ENDDO
+                 !
+              ENDIF
+           ENDIF
+           !
         ENDDO
-      ENDDO
-      !
-    ELSE
-      !
-      !$acc parallel loop collapse(3)
-      DO ias = 1, nat
-        DO i = 1, nhm
-          DO j = 1, nhm
-            na = na_v(ias)
-            !$acc loop seq
-            DO is = 1, npol
-              ijs = (is-1)*npol + is
-              deff_nc(i,j,na,ijs) = deeq_nc(i,j,na,ijs) - CMPLX(et*qq_at(i,j,na),KIND=DP)
-            ENDDO
-          ENDDO
-        ENDDO
-      ENDDO
-      !
-    ENDIF
-    !
-    !$acc end data
-    !
-  ENDIF  
+     ENDDO
+     !
+  ENDIF
   !
-  !$acc end data
   !
   RETURN
   !

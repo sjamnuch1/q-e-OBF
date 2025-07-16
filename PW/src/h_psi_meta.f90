@@ -1,5 +1,5 @@
 !
-! Copyright (C) 2007-2024 Quantum ESPRESSO Foundation
+! Copyright (C) 2007 Quantum ESPRESSO group
 ! This file is distributed under the terms of the
 ! GNU General Public License. See the file `License'
 ! in the root directory of the present distribution,
@@ -15,14 +15,14 @@ SUBROUTINE h_psi_meta( ldap, np, mp, psip, hpsi )
   USE kinds,                ONLY : DP
   USE cell_base,            ONLY : tpiba
   USE lsda_mod,             ONLY : nspin, current_spin
-  USE wvfct,                ONLY : npwx, current_k
+  USE wvfct,                ONLY : current_k
   USE gvect,                ONLY : g
   USE scf,                  ONLY : kedtau
   USE klist,                ONLY : xk, igk_k
   USE control_flags,        ONLY : gamma_only
   USE wavefunctions,        ONLY : psic
   USE fft_base,             ONLY : dffts
-  USE fft_wave,             ONLY : wave_r2g, wave_g2r
+  USE fft_interfaces,       ONLY : fwfft, invfft
   !
   IMPLICIT NONE
   !
@@ -39,57 +39,50 @@ SUBROUTINE h_psi_meta( ldap, np, mp, psip, hpsi )
   !
   ! ... local variables
   !
-  COMPLEX(DP), ALLOCATABLE :: psi_g(:,:)
-  INTEGER :: im, i, j, nrxxs, ebnd, brange, dim_g
-  REAL(DP) :: kplusgi, fac
+  REAL(DP), ALLOCATABLE :: kplusg(:)
+  INTEGER :: im, j, nrxxs
   COMPLEX(DP), PARAMETER :: ci=(0.d0,1.d0)
   !
   CALL start_clock( 'h_psi_meta' )
   !
   nrxxs = dffts%nnr
-  dim_g = 1
-  IF (gamma_only) dim_g = 2
-  !
-  ALLOCATE( psi_g(npwx,dim_g) )
-  !$acc enter data create(psi_g, psic) copyin(kedtau) 
-  !$acc data present_or_copyin(psip) present_or_copyout(hpsi) 
+  ALLOCATE( kplusg(np) )
   !
   IF (gamma_only) THEN
      !
-     ! ... Gamma algorithm
+     ! gamma algorithm
      !
      DO im = 1, mp, 2
-        !
-        fac = 1.d0
-        IF ( im < mp ) fac = 0.5d0
-        !
         DO j = 1, 3
            !
-           !$acc parallel loop  
-           DO i = 1, np
-              kplusgi = (xk(j,current_k)+g(j,i)) * tpiba
-              psi_g(i,1) = CMPLX(0._DP,kplusgi,KIND=DP) * psip(i,im)
-              IF ( im < mp ) psi_g(i,2) = CMPLX(0._DP,kplusgi,KIND=DP) * psip(i,im+1)
-           ENDDO
+           psic(1:nrxxs) = ( 0.D0, 0.D0 )
            !
-           ebnd = im
-           IF ( im < mp ) ebnd = ebnd + 1
-           brange = ebnd-im+1
+           kplusg (1:np) = (xk(j,current_k)+g(j,1:np)) * tpiba
+           IF (im < mp ) THEN
+              psic(dffts%nl (1:np)) =  ci * kplusg(1:np) * &
+                             ( psip (1:np,im) + ci * psip(1:np,im+1) )
+              psic(dffts%nlm(1:np)) = -ci * kplusg(1:np) * &
+                        CONJG( psip (1:np,im) - ci * psip(1:np,im+1) )
+           ELSE
+              psic(dffts%nl (1:np)) =  ci * kplusg(1:np) *       psip(1:np,im) 
+              psic(dffts%nlm(1:np)) = -ci * kplusg(1:np) * CONJG(psip(1:np,im))
+           ENDIF
            !
-           CALL wave_g2r( psi_g(1:np,1:brange), psic, dffts )
+           CALL invfft( 'Wave', psic, dffts )
            !
-           !$acc kernels 
-           psic(1:nrxxs) = kedtau(1:nrxxs,current_spin) * psic(1:nrxxs)
-           !$acc end kernels
+           psic(1:nrxxs) = kedtau(1:nrxxs,current_spin) * psic(1:nrxxs) 
            !
-           CALL wave_r2g( psic(1:dffts%nnr), psi_g(:,1:brange), dffts )
+           CALL fwfft( 'Wave', psic, dffts )
            !
-           !$acc parallel loop 
-           DO i = 1, np
-              kplusgi = (xk(j,current_k)+g(j,i)) * tpiba
-              hpsi(i,im) = hpsi(i,im) - ci * kplusgi * fac * psi_g(i,1)
-              IF ( im < mp ) hpsi(i,im+1) = hpsi(i,im+1) - ci * kplusgi * fac * psi_g(i,2)
-           ENDDO
+           IF ( im < mp ) THEN
+              hpsi(1:np,im) = hpsi(1:np,im)   - ci * kplusg(1:np) * 0.5d0 * &
+                       ( psic(dffts%nl(1:np)) + CONJG(psic(dffts%nlm(1:np))) )
+              hpsi(1:np,im+1) = hpsi(1:np,im+1) - kplusg(1:np) * 0.5d0 * &
+                       ( psic(dffts%nl(1:np)) - CONJG(psic(dffts%nlm(1:np))) )
+           ELSE
+              hpsi(1:np,im) = hpsi(1:np,im) - ci * kplusg(1:np) * &
+                              psic(dffts%nl(1:np))
+           ENDIF
            !
         ENDDO
      ENDDO
@@ -101,34 +94,26 @@ SUBROUTINE h_psi_meta( ldap, np, mp, psip, hpsi )
      DO im = 1, mp
         DO j = 1, 3
            !
-           !$acc parallel loop 
-           DO i = 1, np
-              kplusgi = (xk(j,current_k)+g(j,igk_k(i,current_k)))*tpiba
-              psi_g(i,1) = CMPLX(0._DP,kplusgi,KIND=DP) * psip(i,im)
-           ENDDO
+           psic(1:nrxxs) = ( 0.D0, 0.D0 )
            !
-           CALL wave_g2r( psi_g(1:np,1:1), psic, dffts, igk=igk_k(:,current_k) )
+           kplusg (1:np) = (xk(j,current_k)+g(j,igk_k(1:np,current_k)))*tpiba
+           psic(dffts%nl(igk_k(1:np,current_k))) = CMPLX(0d0, kplusg(1:np), KIND=DP) &
+                                                   * psip(1:np,im)
            !
-           !$acc kernels 
-           psic(1:nrxxs) = kedtau(1:nrxxs,current_spin) * psic(1:nrxxs)
-           !$acc end kernels 
+           CALL invfft( 'Wave', psic, dffts )
            !
-           CALL wave_r2g( psic(1:dffts%nnr), psi_g(1:np,1:1), dffts, igk=igk_k(:,current_k) )
+           psic(1:nrxxs) = kedtau(1:nrxxs,current_spin) * psic(1:nrxxs) 
            !
-           !$acc parallel loop 
-           DO i = 1, np
-              kplusgi = (xk(j,current_k)+g(j,igk_k(i,current_k)))*tpiba
-              hpsi(i,im) = hpsi(i,im) - CMPLX(0._DP,kplusgi,KIND=DP) * psi_g(i,1)
-           ENDDO
+           CALL fwfft( 'Wave', psic, dffts )
            !
+           hpsi(1:np,im) = hpsi(1:np,im) - CMPLX(0d0, kplusg(1:np), KIND=DP) &
+                                         * psic(dffts%nl(igk_k(1:np,current_k)))
         ENDDO
      ENDDO
      !
   ENDIF
   !
-  !$acc end data
-  !$acc exit data delete(psi_g,psic,kedtau)
-  DEALLOCATE( psi_g )
+  DEALLOCATE( kplusg )
   !
   CALL stop_clock( 'h_psi_meta' )
   !

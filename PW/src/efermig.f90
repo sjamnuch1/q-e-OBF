@@ -1,5 +1,5 @@
 !
-! Copyright (C) 2001-2025 Quantum ESPRESSO Foundation
+! Copyright (C) 2001-2003 PWSCF group
 ! This file is distributed under the terms of the
 ! GNU General Public License. See the file `License'
 ! in the root directory of the present distribution,
@@ -8,10 +8,8 @@
 !--------------------------------------------------------------------
 FUNCTION efermig( et, nbnd, nks, nelec, wk, Degauss, Ngauss, is, isk )
   !--------------------------------------------------------------------
-  !! Finds the Fermi energy - Gaussian Broadening
+  !! Finds the Fermi energy - Gaussian Broadening. 
   !! (see Methfessel and Paxton, PRB 40, 3616 (1989 )
-  !! Improved bisection algorithm by Flaviano José dos Santos (EPFL)
-  !! Functions not passed as arguments (some compilers don't like it) 
   !
   USE io_global, ONLY : stdout
   USE kinds,     ONLY : DP
@@ -85,8 +83,8 @@ FUNCTION efermig( et, nbnd, nks, nelec, wk, Degauss, Ngauss, is, isk )
   end if
 
   maxiter_aux = maxiter
-  
-  call bisection_find_efermi( Elw, Eup, ef, eps, maxiter_aux, info)
+
+  call bisection_find_efermi(num_electrons_minus_nelec, Elw, Eup, ef, eps, maxiter_aux, info)
 
   ! Error handling
   select case( info )
@@ -117,8 +115,7 @@ FUNCTION efermig( et, nbnd, nks, nelec, wk, Degauss, Ngauss, is, isk )
   
   if( Ngauss_ > 0  .or.  Ngauss_ == -1 ) then ! If methfessel-paxton method or Cold smearing method
 
-!    call newton_minimization(dev1_sq_num_electrons, dev2_sq_num_electrons, ef, eps, maxiter_aux, info)
-    call newton_minimization( ef, eps, maxiter_aux, info)
+    call newton_minimization(dev1_sq_num_electrons, dev2_sq_num_electrons, ef, eps, maxiter_aux, info)
 
   end if
 
@@ -140,8 +137,7 @@ FUNCTION efermig( et, nbnd, nks, nelec, wk, Degauss, Ngauss, is, isk )
     Ngauss_ = Ngauss
     maxiter_aux = maxiter
 
-!    call bisection_find_efermi(num_electrons_minus_nelec, Elw, Eup, ef, eps, maxiter_aux, info)
-    call bisection_find_efermi( Elw, Eup, ef, eps, maxiter_aux, info)
+    call bisection_find_efermi(num_electrons_minus_nelec, Elw, Eup, ef, eps, maxiter_aux, info)
 
     efermig = ef
 
@@ -212,7 +208,7 @@ FUNCTION efermig( et, nbnd, nks, nelec, wk, Degauss, Ngauss, is, isk )
     dev2_sq_num_electrons = 2.d0 * ( (dev1_num_electrons(ef))**2 + num_electrons_minus_nelec(ef) * dev2_num_electrons(ef) )
   end function dev2_sq_num_electrons
 
-  subroutine newton_minimization(x, tol, Nmax, info)
+  subroutine newton_minimization(f1, f2, x, tol, Nmax, info)
     real(DP),          intent(inout) :: x
     !! Initial guess in the entry. Solution in the exit
     real(DP),          intent(in)    :: tol
@@ -222,6 +218,7 @@ FUNCTION efermig( et, nbnd, nks, nelec, wk, Degauss, Ngauss, is, isk )
 
     real(DP)                         :: abstol, x0, denominator, numerator, factor
     integer                          :: i
+    real(DP)                         :: f1, f2
 
     abstol = abs(tol)
 
@@ -231,8 +228,8 @@ FUNCTION efermig( et, nbnd, nks, nelec, wk, Degauss, Ngauss, is, isk )
 
     do i = 1, Nmax
        
-       numerator   = dev1_sq_num_electrons(x)
-       denominator = abs(dev2_sq_num_electrons(x))
+       numerator   = f1(x)
+       denominator = abs(f2(x))
 
        ! Checking if the denominator is zero
        if( denominator > abstol ) then
@@ -262,7 +259,7 @@ FUNCTION efermig( et, nbnd, nks, nelec, wk, Degauss, Ngauss, is, isk )
     end if 
   end subroutine newton_minimization
 
-  subroutine bisection_find_efermi( energy_lower_bound, energy_upper_bound, x, tol, Nmax, info)
+  subroutine bisection_find_efermi(f, energy_lower_bound, energy_upper_bound, x, tol, Nmax, info)
     real(DP),      intent(in)    :: energy_lower_bound
     real(DP),      intent(in)    :: energy_upper_bound
     real(DP),      intent(out)   :: x
@@ -275,13 +272,14 @@ FUNCTION efermig( et, nbnd, nks, nelec, wk, Degauss, Ngauss, is, isk )
 
     real(DP)                     :: abs_tol, fx, Elw_local, Eup_local
     integer                      :: i
+    real(DP), EXTERNAL           :: f
 
     abs_tol = abs(tol)
 
     Elw_local = energy_lower_bound
     Eup_local = energy_upper_bound
 
-    if( num_electrons_minus_nelec(Elw_local) > abs_tol .or. num_electrons_minus_nelec(Eup_local) < -abs_tol ) then
+    if( f(Elw_local) > abs_tol .or. f(Eup_local) < -abs_tol ) then
       info = 2
       return
     end if
@@ -289,7 +287,7 @@ FUNCTION efermig( et, nbnd, nks, nelec, wk, Degauss, Ngauss, is, isk )
     do i = 1, Nmax
 
       x = ( Eup_local + Elw_local ) * 0.5d0
-      fx = num_electrons_minus_nelec(x)
+      fx = f(x)
 
       ! Was the root found?
       if( abs(fx) < abs_tol ) then

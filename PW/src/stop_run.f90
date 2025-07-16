@@ -8,9 +8,13 @@
 !----------------------------------------------------------------------------
 SUBROUTINE stop_run( exit_status )
   !----------------------------------------------------------------------------
-  !! Close all files and synchronize processes before stopping. 
-  !! Remove temporary files needed for restart only if exit_status = 0
-  !! (successful execution)
+  !! Close all files and synchronize processes before stopping:
+  !
+  !! * exit_status = 0: successfull execution, remove temporary files;
+  !! * exit_status =-1: code stopped by user request;
+  !! * exit_status = 1: convergence not achieved.
+  !
+  !! Do not remove temporary files needed for restart.
   !
   USE io_global,          ONLY : ionode
   USE mp_global,          ONLY : mp_global_end
@@ -54,16 +58,12 @@ END SUBROUTINE stop_run
 !-----------------------------------------
 SUBROUTINE do_stop( exit_status )
   !---------------------------------------
-  !! Stop the run. Exit status is returned to the shell only if
-  !! preprocessing flag __RETURN_EXIT_STATUS is set (default: no).
+  !! Stop the run.
   !
   IMPLICIT NONE
   !
   INTEGER, INTENT(IN) :: exit_status
   !
-#if ! defined(__RETURN_EXIT_STATUS)
-  STOP
-#else
   IF ( exit_status == -1 ) THEN
      ! -1 is not an acceptable value for stop in fortran;
      ! convert it to 255
@@ -90,7 +90,6 @@ SUBROUTINE do_stop( exit_status )
      ! unimplemented value
      STOP 128
   ENDIF
-#endif
   !
 END SUBROUTINE do_stop
 !

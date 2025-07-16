@@ -1,0 +1,16 @@
+&inputobfdiag
+obfdiag_in%prefix = 'system'
+obfdiag_in%outdir = './Out_obf'
+obfdiag_in%unkdir = './Out_unk'
+obfdiag_in%nonlocal_interpolation=.false.
+obfdiag_in%kpoint_filename='KPOINTS'
+obfdiag_in%interp_kpoint_filename='K'
+obfdiag_in%kpoint_style='automatic'
+obfdiag_in%kpoint_wrap=.false.
+obfdiag_in%interp_style='automatic'
+obfdiag_in%lshrink=.true.
+obfdiag_in%nband_save=25
+obfdiag_in%lcollect_bnk=.false.
+obfdiag_in%build_unk=.true.
+obfdiag_in%hamilk_byfile=.true.
+/
